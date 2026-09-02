@@ -1,0 +1,23 @@
+{
+  "name": "cynk-together-relay",
+  "version": "1.0.0",
+  "description": "Standalone internet-wide synchronization relay server for Cynk Together",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "test": "tsc && node dist/tests/server.test.js"
+  },
+  "keywords": ["cynk", "music", "together", "relay", "websocket"],
+  "author": "Cynk Music",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}
