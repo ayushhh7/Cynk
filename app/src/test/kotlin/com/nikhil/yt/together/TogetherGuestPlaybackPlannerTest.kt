@@ -53,8 +53,7 @@ class TogetherGuestPlaybackPlannerTest {
         val ops = TogetherGuestPlaybackPlanner.planPlayTrackNow(roomState, TogetherTrack(id = "b", title = "B"), 0L, true)
         assertEquals(
             listOf(
-                TogetherGuestOp.AddTrack(TogetherTrack(id = "b", title = "B"), AddTrackMode.PLAY_NEXT),
-                TogetherGuestOp.Control(ControlAction.SeekToTrack(trackId = "b", positionMs = 0L)),
+                TogetherGuestOp.Control(ControlAction.PlayTrackNow(TogetherTrack(id = "b", title = "B"), positionMs = 0L)),
             ),
             ops,
         )

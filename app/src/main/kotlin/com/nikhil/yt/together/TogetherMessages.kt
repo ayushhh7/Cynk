@@ -213,4 +213,11 @@ sealed interface ControlAction {
     data class SetShuffleEnabled(
         val shuffleEnabled: Boolean,
     ) : ControlAction
+
+    @Serializable
+    @SerialName("play_track_now")
+    data class PlayTrackNow(
+        val track: TogetherTrack,
+        val positionMs: Long = 0L,
+    ) : ControlAction
 }

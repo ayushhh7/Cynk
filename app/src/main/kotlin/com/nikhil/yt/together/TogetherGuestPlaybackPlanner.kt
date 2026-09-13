@@ -36,9 +36,7 @@ internal object TogetherGuestPlaybackPlanner {
 
             roomState.settings.allowGuestsToAddTracks -> {
                 buildList {
-                    add(TogetherGuestOp.AddTrack(track.copy(id = trackId), AddTrackMode.PLAY_NEXT))
-                    add(TogetherGuestOp.Control(ControlAction.SeekToTrack(trackId = trackId, positionMs = 0L)))
-                    if (shouldRequestPlay) add(TogetherGuestOp.Control(ControlAction.Play))
+                    add(TogetherGuestOp.Control(ControlAction.PlayTrackNow(track = track.copy(id = trackId), positionMs = safePos)))
                 }
             }
 

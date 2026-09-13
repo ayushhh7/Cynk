@@ -72,6 +72,25 @@ class TogetherCoreTest {
     }
 
     @Test
+    fun protocol_playTrackNow_roundTrip() {
+        val message: TogetherMessage =
+            ControlRequest(
+                sessionId = "sid",
+                participantId = "pid",
+                action = ControlAction.PlayTrackNow(track = TogetherTrack(id = "track456", title = "Song"), positionMs = 123L),
+            )
+        val json = TogetherJson.json.encodeToString(TogetherMessage.serializer(), message)
+        val decoded = TogetherJson.json.decodeFromString(TogetherMessage.serializer(), json)
+        assertTrue(decoded is ControlRequest)
+        val req = decoded as ControlRequest
+        assertTrue(req.action is ControlAction.PlayTrackNow)
+        val action = req.action as ControlAction.PlayTrackNow
+        assertEquals("track456", action.track.id)
+        assertEquals("Song", action.track.title)
+        assertEquals(123L, action.positionMs)
+    }
+
+    @Test
     fun clock_estimates_offset_and_rtt() {
         val clock = TogetherClock()
         val snapshot =

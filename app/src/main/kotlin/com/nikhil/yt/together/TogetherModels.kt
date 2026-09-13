@@ -136,5 +136,11 @@ sealed interface TogetherServerEvent {
         val message: String,
         val throwable: Throwable? = null,
     ) : TogetherServerEvent
+
+    data class Reconnecting(
+        val attempt: Int,
+    ) : TogetherServerEvent
+
+    data object Disconnected : TogetherServerEvent
 }
 

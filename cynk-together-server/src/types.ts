@@ -49,7 +49,8 @@ export type ControlAction =
   | { type: "seek_to_index"; index: number; positionMs?: number }
   | { type: "seek_to_track"; trackId: string; positionMs?: number }
   | { type: "set_repeat_mode"; repeatMode: number }
-  | { type: "set_shuffle_enabled"; shuffleEnabled: boolean };
+  | { type: "set_shuffle_enabled"; shuffleEnabled: boolean }
+  | { type: "play_track_now"; track: TogetherTrack; positionMs?: number };
 
 export interface ClientHello {
   type: "client_hello";

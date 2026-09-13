@@ -20,6 +20,7 @@ import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -107,13 +108,14 @@ class TogetherClient(
             engine {
                 config {
                     connectTimeout(15, TimeUnit.SECONDS)
-                    readTimeout(30, TimeUnit.SECONDS)
+                    readTimeout(0, TimeUnit.MILLISECONDS) // 0 disables read timeout for persistent WebSocket
                     writeTimeout(15, TimeUnit.SECONDS)
+                    pingInterval(20, TimeUnit.SECONDS)
                     retryOnConnectionFailure(true)
                 }
             }
             install(WebSockets) {
-                pingIntervalMillis = 25_000
+                pingIntervalMillis = 20_000
             }
         }
 
@@ -183,12 +185,16 @@ class TogetherClient(
                         runLoop(this, joinInfo.sessionId)
                     }
                     return@launch
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     lastError = t
                 }
             }
 
-            dispatchEvent(TogetherClientEvent.Error(connectionFailureMessage(lastError), lastError))
+            if (!isExplicitDisconnect) {
+                dispatchEvent(TogetherClientEvent.Error(connectionFailureMessage(lastError), lastError))
+            }
             _state.value = TogetherClientState.Idle
         }
     }
@@ -236,12 +242,16 @@ class TogetherClient(
                         runLoop(this, sessionId)
                     }
                     return@launch
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     lastError = t
                 }
             }
 
-            dispatchEvent(TogetherClientEvent.Error(connectionFailureMessage(lastError), lastError))
+            if (!isExplicitDisconnect) {
+                dispatchEvent(TogetherClientEvent.Error(connectionFailureMessage(lastError), lastError))
+            }
             _state.value = TogetherClientState.Idle
         }
     }
@@ -256,8 +266,13 @@ class TogetherClient(
     }
 
     private fun connectionFailureMessage(t: Throwable?): String {
+        if (t is CancellationException) return "Disconnected"
         val root = generateSequence(t) { it.cause }.lastOrNull()
+        if (root is CancellationException) return "Disconnected"
         val raw = root?.message?.trim().orEmpty()
+        if (raw.contains("cancelled", ignoreCase = true) || raw.contains("StandaloneCoroutine", ignoreCase = true)) {
+            return "Disconnected"
+        }
         val reason =
             when (root) {
                 is java.net.UnknownHostException -> "Server not found"
@@ -341,6 +356,8 @@ class TogetherClient(
                             } catch (_: ClosedReceiveChannelException) {
                                 shouldTryReconnect = !isExplicitDisconnect
                                 break
+                            } catch (e: CancellationException) {
+                                throw e
                             }
 
                         val text = (frame as? Frame.Text)?.readText() ?: continue
@@ -422,14 +439,17 @@ class TogetherClient(
                             else -> Unit
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     shouldTryReconnect = !isExplicitDisconnect
-                    dispatchEvent(TogetherClientEvent.Error("Connection loop failed", t))
                 } finally {
                     if (shouldTryReconnect && !isExplicitDisconnect) {
                         scheduleReconnect()
                     } else {
-                        dispatchEvent(TogetherClientEvent.Disconnected)
+                        if (!isExplicitDisconnect) {
+                            dispatchEvent(TogetherClientEvent.Disconnected)
+                        }
                         _state.value = TogetherClientState.Idle
                     }
                 }
@@ -444,7 +464,9 @@ class TogetherClient(
         val name = lastDisplayName
 
         if (remoteWs == null || remoteSid == null || remoteKey == null) {
-            dispatchEvent(TogetherClientEvent.Disconnected)
+            if (!isExplicitDisconnect) {
+                dispatchEvent(TogetherClientEvent.Disconnected)
+            }
             _state.value = TogetherClientState.Idle
             return
         }
@@ -485,6 +507,8 @@ class TogetherClient(
                                 runLoop(this, remoteSid)
                             }
                             return@launch
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Throwable) {
                             // Retry next
                         }

@@ -20,6 +20,7 @@ import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -55,13 +56,14 @@ class TogetherOnlineHost(
             engine {
                 config {
                     connectTimeout(15, TimeUnit.SECONDS)
-                    readTimeout(30, TimeUnit.SECONDS)
+                    readTimeout(0, TimeUnit.MILLISECONDS) // 0 disables read timeout for persistent WebSocket
                     writeTimeout(15, TimeUnit.SECONDS)
+                    pingInterval(20, TimeUnit.SECONDS)
                     retryOnConnectionFailure(true)
                 }
             }
             install(WebSockets) {
-                pingIntervalMillis = 25_000
+                pingIntervalMillis = 20_000
             }
         }
 
@@ -133,12 +135,31 @@ class TogetherOnlineHost(
                     runLoop(this, candidate)
                 }
                 return
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
                 lastError = t
             }
         }
 
-        onEvent?.invoke(TogetherServerEvent.Error(connectionFailureMessage(lastError), lastError))
+        if (!isExplicitDisconnect) {
+            onEvent?.invoke(TogetherServerEvent.Error(connectionFailureMessage(lastError), lastError))
+        }
+    }
+
+    suspend fun sendHeartbeat(sessionId: String, pingId: Long, clientElapsedRealtimeMs: Long) {
+        runCatching {
+            session?.send(
+                TogetherJson.json.encodeToString(
+                    TogetherMessage.serializer(),
+                    HeartbeatPing(
+                        sessionId = sessionId,
+                        pingId = pingId,
+                        clientElapsedRealtimeMs = clientElapsedRealtimeMs,
+                    ),
+                ),
+            )
+        }
     }
 
     private fun alternateWebSocketSchemeOrNull(url: String): String? {
@@ -151,8 +172,13 @@ class TogetherOnlineHost(
     }
 
     private fun connectionFailureMessage(t: Throwable?): String {
+        if (t is CancellationException) return "Disconnected"
         val root = generateSequence(t) { it.cause }.lastOrNull()
+        if (root is CancellationException) return "Disconnected"
         val raw = root?.message?.trim().orEmpty()
+        if (raw.contains("cancelled", ignoreCase = true) || raw.contains("StandaloneCoroutine", ignoreCase = true)) {
+            return "Disconnected"
+        }
         val reason =
             when (root) {
                 is java.net.UnknownHostException -> "Server not found"
@@ -309,6 +335,8 @@ class TogetherOnlineHost(
                             } catch (_: ClosedReceiveChannelException) {
                                 shouldTryReconnect = !isExplicitDisconnect
                                 break
+                            } catch (e: CancellationException) {
+                                throw e
                             }
 
                         val text = (frame as? Frame.Text)?.readText() ?: continue
@@ -381,9 +409,10 @@ class TogetherOnlineHost(
                             else -> Unit
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     shouldTryReconnect = !isExplicitDisconnect
-                    onEvent?.invoke(TogetherServerEvent.Error("Connection loop failed", t))
                 } finally {
                     if (shouldTryReconnect && !isExplicitDisconnect) {
                         scheduleHostReconnect()
@@ -392,7 +421,9 @@ class TogetherOnlineHost(
                         guests.clear()
                         lastParticipants = emptyList()
                         runCatching { session.close(CloseReason(CloseReason.Codes.NORMAL, "Disconnected")) }
-                        onEvent?.invoke(TogetherServerEvent.Error("Disconnected", null))
+                        if (!isExplicitDisconnect) {
+                            onEvent?.invoke(TogetherServerEvent.Disconnected)
+                        }
                     }
                 }
             }
@@ -407,6 +438,7 @@ class TogetherOnlineHost(
                 var attempt = 0
                 while (attempt < 4 && !isExplicitDisconnect) {
                     attempt++
+                    onEvent?.invoke(TogetherServerEvent.Reconnecting(attempt))
                     val delayMs = (1000L * (1 shl (attempt - 1))).coerceAtMost(6000L)
                     kotlinx.coroutines.delay(delayMs)
                     if (isExplicitDisconnect) break
@@ -434,6 +466,8 @@ class TogetherOnlineHost(
                                 runLoop(this, candidate)
                             }
                             return@launch
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (_: Throwable) {
                             // Retry next
                         }
@@ -444,7 +478,7 @@ class TogetherOnlineHost(
                     hostParticipantId = null
                     guests.clear()
                     lastParticipants = emptyList()
-                    onEvent?.invoke(TogetherServerEvent.Error("Disconnected", null))
+                    onEvent?.invoke(TogetherServerEvent.Disconnected)
                 }
             }
     }
