@@ -131,6 +131,24 @@ class PlayerConnection(
         service.toggleLike()
     }
 
+    fun seekTo(positionMs: Long) {
+        val state = service.togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
+        if (state?.role is com.nikhil.yt.together.TogetherRole.Guest) {
+            service.requestTogetherControl(com.nikhil.yt.together.ControlAction.SeekTo(positionMs))
+            return
+        }
+        player.seekTo(positionMs)
+    }
+
+    fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        val state = service.togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
+        if (state?.role is com.nikhil.yt.together.TogetherRole.Guest) {
+            service.requestTogetherControl(com.nikhil.yt.together.ControlAction.SeekToIndex(mediaItemIndex, positionMs))
+            return
+        }
+        player.seekTo(mediaItemIndex, positionMs)
+    }
+
     fun seekToNext() {
         val state = service.togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
         if (state?.role is com.nikhil.yt.together.TogetherRole.Guest) {

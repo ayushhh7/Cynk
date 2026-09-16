@@ -978,7 +978,7 @@ fun Lyrics(
                                         }
                                     }
                                 } else if (isSynced && changeLyrics) {
-                                    playerConnection.player.seekTo(item.time)
+                                    playerConnection.seekTo(item.time)
                                     scope.launch {
                                         val itemInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
                                         if (itemInfo != null) {

@@ -12,6 +12,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nikhil.yt.innertube.YouTube
+import com.nikhil.yt.innertube.models.AlbumItem
 import com.nikhil.yt.innertube.models.PlaylistItem
 import com.nikhil.yt.innertube.models.SongItem
 import com.nikhil.yt.innertube.models.WatchEndpoint
@@ -35,11 +36,15 @@ import com.nikhil.yt.extensions.toEnum
 import com.nikhil.yt.models.SimilarRecommendation
 import com.nikhil.yt.utils.dataStore
 import com.nikhil.yt.utils.get
+import com.nikhil.yt.utils.getAsync
 import com.nikhil.yt.utils.SyncUtils
+import com.nikhil.yt.utils.CynkContentFilter
 import com.nikhil.yt.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
@@ -63,14 +68,14 @@ class HomeViewModel @Inject constructor(
     }.distinctUntilChanged()
 
     val quickPicks = MutableStateFlow<List<Song>?>(null)
-    val trendingSongs = MutableStateFlow<List<SongItem>?>(null)
-    val reelsSongs = MutableStateFlow<List<SongItem>?>(null)
+    val trendingSongs = MutableStateFlow<List<SongItem>?>(cachedTrendingSongs)
+    val reelsSongs = MutableStateFlow<List<SongItem>?>(cachedReelsSongs)
     val forgottenFavorites = MutableStateFlow<List<Song>?>(null)
     val keepListening = MutableStateFlow<List<LocalItem>?>(null)
     val similarRecommendations = MutableStateFlow<List<SimilarRecommendation>?>(null)
     val accountPlaylists = MutableStateFlow<List<PlaylistItem>?>(null)
-    val homePage = MutableStateFlow<HomePage?>(null)
-    val explorePage = MutableStateFlow<ExplorePage?>(null)
+    val homePage = MutableStateFlow<HomePage?>(cachedHomePage)
+    val explorePage = MutableStateFlow<ExplorePage?>(cachedExplorePage)
     val selectedChip = MutableStateFlow<HomePage.Chip?>(null)
     private val previousHomePage = MutableStateFlow<HomePage?>(null)
 
@@ -95,9 +100,20 @@ class HomeViewModel @Inject constructor(
         return chips?.filterNot { it.title.contains("podcasts", ignoreCase = true) }
     }
 
+    private suspend fun getUserPreferredArtists(): Set<String> {
+        return runCatching {
+            database.allArtistsByPlayTime().first().take(20).map { it.artist.name }.toSet()
+        }.getOrDefault(emptySet())
+    }
+
     private suspend fun getQuickPicks(){
-        when (quickPicksEnum.first()) {
-            QuickPicks.QUICK_PICKS -> quickPicks.value = database.quickPicks().first().shuffled().take(20)
+        val qpType = context.dataStore.getAsync(QuickPicksKey, QuickPicks.QUICK_PICKS.name).toEnum(QuickPicks.QUICK_PICKS)
+        val userArtists = getUserPreferredArtists()
+        when (qpType) {
+            QuickPicks.QUICK_PICKS -> {
+                val raw = database.quickPicks().first()
+                quickPicks.value = CynkContentFilter.filterAndRankLocalSongs(raw, userArtists).shuffled().take(20)
+            }
             QuickPicks.LAST_LISTEN -> songLoad()
         }
     }
@@ -107,9 +123,80 @@ class HomeViewModel @Inject constructor(
         isLoading.value = true
         
         try {
-            val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-            val hideVideo = context.dataStore.get(HideVideoKey, false)
+            val hideExplicit = context.dataStore.getAsync(HideExplicitKey, false)
+            val hideVideo = context.dataStore.getAsync(HideVideoKey, false)
             val fromTimeStamp = System.currentTimeMillis() - 86400000 * 7 * 2
+
+            // Stage 0: Instant Disk Cache Emission (cold-start acceleration)
+            if (homePage.value == null) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    val userArtists = getUserPreferredArtists()
+                    val cacheFile = java.io.File(context.cacheDir, "cynk_home_cache.json")
+                    if (cacheFile.exists()) {
+                        val raw = runCatching { cacheFile.readText() }.getOrNull()
+                        if (!raw.isNullOrBlank() && homePage.value == null) {
+                            YouTube.parseHomeFromRawJson(raw).onSuccess { cachedPage ->
+                                if (homePage.value == null) {
+                                    val filteredSections = cachedPage.sections.mapNotNull { section ->
+                                        val cleanItems = section.items
+                                            .filterExplicit(hideExplicit)
+                                            .filterVideo(hideVideo)
+                                            .filter { item ->
+                                                when (item) {
+                                                    is SongItem -> CynkContentFilter.isAllowed(item.title, item.artists.joinToString { it.name }, item.album?.name, userArtists)
+                                                    is PlaylistItem -> CynkContentFilter.isAllowed(item.title, item.author?.name.orEmpty(), null, userArtists)
+                                                    is AlbumItem -> CynkContentFilter.isAllowed(item.title, item.artists.orEmpty().joinToString { it.name }, null, userArtists)
+                                                    else -> true
+                                                }
+                                            }
+                                        if (cleanItems.isNotEmpty()) section.copy(items = cleanItems) else null
+                                    }
+                                    val readyPage = cachedPage.copy(
+                                        chips = filterHomeChips(cachedPage.chips),
+                                        sections = filteredSections
+                                    )
+                                    homePage.value = readyPage
+                                    cachedHomePage = readyPage
+                                    allYtItems.value = filteredSections.flatMap { it.items }
+                                    Timber.d("CYNK_DIAG: Loaded homePage from disk cache in ~10ms")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Stage 0b: Instant Disk Cache for Trending
+            if (trendingSongs.value == null) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    val userArtists = getUserPreferredArtists()
+                    val trendingCache = java.io.File(context.cacheDir, "cynk_trending_cache.json")
+                    if (trendingCache.exists()) {
+                        val raw = runCatching { trendingCache.readText() }.getOrNull()
+                        if (!raw.isNullOrBlank() && trendingSongs.value == null) {
+                            YouTube.parseChartsFromRawJson(raw).onSuccess { charts ->
+                                if (trendingSongs.value == null) {
+                                    val songs = charts.sections.flatMap { it.items }
+                                        .filterIsInstance<SongItem>()
+                                        .filterExplicit(hideExplicit)
+                                        .filterVideo(hideVideo)
+                                    val ranked = CynkContentFilter.filterAndRankSongs(
+                                        songs = songs,
+                                        userPreferredArtists = userArtists,
+                                        targetEnglishRatio = 0.70f,
+                                        limit = 24
+                                    )
+                                    if (ranked.isNotEmpty()) {
+                                        trendingSongs.value = ranked
+                                        cachedTrendingSongs = ranked
+                                        Timber.d("CYNK_DIAG: Loaded trendingSongs from disk cache in ~10ms")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Stage 1: Fast local Quick Picks (Local DB)
             viewModelScope.launch(Dispatchers.IO) {
@@ -122,75 +209,144 @@ class HomeViewModel @Inject constructor(
             viewModelScope.launch(Dispatchers.IO) {
                 YouTube.home().onSuccess { page ->
                     Timber.d("CYNK_DIAG: home() SUCCESS - ${page.sections.size} sections")
-                    val filteredSections = page.sections.map { section ->
-                        section.copy(items = section.items.filterExplicit(hideExplicit).filterVideo(hideVideo))
+                    val userArtists = getUserPreferredArtists()
+                    val filteredSections = page.sections.mapNotNull { section ->
+                        val cleanItems = section.items
+                            .filterExplicit(hideExplicit)
+                            .filterVideo(hideVideo)
+                            .filter { item ->
+                                when (item) {
+                                    is SongItem -> CynkContentFilter.isAllowed(item.title, item.artists.joinToString { it.name }, item.album?.name, userArtists)
+                                    is PlaylistItem -> CynkContentFilter.isAllowed(item.title, item.author?.name.orEmpty(), null, userArtists)
+                                    is AlbumItem -> CynkContentFilter.isAllowed(item.title, item.artists.orEmpty().joinToString { it.name }, null, userArtists)
+                                    else -> true
+                                }
+                            }
+                        if (cleanItems.isNotEmpty()) section.copy(items = cleanItems) else null
                     }
-                    homePage.value = page.copy(
+                    val readyPage = page.copy(
                         chips = filterHomeChips(page.chips),
                         sections = filteredSections
                     )
+                    homePage.value = readyPage
+                    cachedHomePage = readyPage
                     allYtItems.value = filteredSections.flatMap { it.items }
                     Timber.d("CYNK_DIAG: homePage.value set with ${filteredSections.size} sections")
+
+                    // Persist to disk cache asynchronously for instant cold-start on next open
+                    val raw = YouTube.lastHomeRawResponse
+                    if (!raw.isNullOrBlank()) {
+                        runCatching {
+                            java.io.File(context.cacheDir, "cynk_home_cache.json").writeText(raw)
+                        }
+                    }
                 }.onFailure {
                     Timber.e(it, "CYNK_DIAG: home() FAILED")
                     reportException(it)
                 }
             }
 
-            // Stage 3: Progressive Charts (Trending & Reels) -> emits directly to independent flows!
+            // Stage 3: Progressive Charts (Trending & Reels) - Concurrent Global US + India charts
             viewModelScope.launch(Dispatchers.IO) {
-                YouTube.getChartsPage().onSuccess { charts ->
-                    val tSection = charts.sections.firstOrNull {
-                        it.chartType == ChartsPage.ChartType.TRENDING ||
-                                it.title.contains("Trending", ignoreCase = true)
-                    } ?: charts.sections.firstOrNull {
-                        it.chartType == ChartsPage.ChartType.TOP ||
-                                it.title.contains("Top", ignoreCase = true)
-                    } ?: charts.sections.firstOrNull {
-                        it.items.any { item -> item is SongItem }
-                    }
-                    val tSongs = tSection?.items?.filterIsInstance<SongItem>().orEmpty()
-                        .filterExplicit(hideExplicit).filterVideo(hideVideo)
-                    if (tSongs.isNotEmpty()) {
-                        trendingSongs.value = tSongs
+                val userArtists = getUserPreferredArtists()
+
+                coroutineScope {
+                    val globalChartsDeferred = async { YouTube.getChartsPage(countryCode = "US").getOrNull() }
+                    val regionalChartsDeferred = async { YouTube.getChartsPage(countryCode = "IN").getOrNull() }
+
+                    val globalCharts = globalChartsDeferred.await()
+                    val regionalCharts = regionalChartsDeferred.await()
+
+                    val candidateSongs = mutableListOf<SongItem>()
+
+                    // 1. Collect songs from Global/US charts (high-priority English)
+                    globalCharts?.sections?.forEach { sec ->
+                        candidateSongs.addAll(sec.items.filterIsInstance<SongItem>())
                     }
 
-                    val sSection = charts.sections.firstOrNull {
-                        it.title.contains("Shorts", ignoreCase = true) ||
-                                it.title.contains("Reels", ignoreCase = true) ||
-                                it.title.contains("Viral", ignoreCase = true)
+                    // 2. Collect songs from Regional/India charts
+                    regionalCharts?.sections?.forEach { sec ->
+                        candidateSongs.addAll(sec.items.filterIsInstance<SongItem>())
+                    }
+
+                    val cleanCandidates = candidateSongs
+                        .filterExplicit(hideExplicit)
+                        .filterVideo(hideVideo)
+
+                    val rankedTrending = CynkContentFilter.filterAndRankSongs(
+                        songs = cleanCandidates,
+                        userPreferredArtists = userArtists,
+                        targetEnglishRatio = 0.70f,
+                        limit = 24
+                    )
+
+                    if (rankedTrending.isNotEmpty()) {
+                        trendingSongs.value = rankedTrending
+                        cachedTrendingSongs = rankedTrending
+
+                        // Save raw charts json to disk cache
+                        val chartsRaw = YouTube.lastChartsRawResponse
+                        if (!chartsRaw.isNullOrBlank()) {
+                            runCatching {
+                                java.io.File(context.cacheDir, "cynk_trending_cache.json").writeText(chartsRaw)
+                            }
+                        }
+                    }
+
+                    // Reels / Viral songs from charts
+                    val chartsToSearch = listOfNotNull(globalCharts, regionalCharts)
+                    val sSection = chartsToSearch.firstNotNullOfOrNull { c ->
+                        c.sections.firstOrNull {
+                            it.title.contains("Shorts", ignoreCase = true) ||
+                                    it.title.contains("Reels", ignoreCase = true) ||
+                                    it.title.contains("Viral", ignoreCase = true)
+                        }
                     }
                     val rSongs = sSection?.items?.filterIsInstance<SongItem>().orEmpty()
                         .filterExplicit(hideExplicit).filterVideo(hideVideo)
-                    if (rSongs.isNotEmpty()) {
-                        reelsSongs.value = rSongs
+                    val filteredReels = CynkContentFilter.filterAndRankSongs(
+                        songs = rSongs,
+                        userPreferredArtists = userArtists,
+                        targetEnglishRatio = 0.70f,
+                        limit = 20
+                    )
+                    if (filteredReels.isNotEmpty()) {
+                        reelsSongs.value = filteredReels
+                        cachedReelsSongs = filteredReels
                     }
-                }.onFailure {
-                    Timber.e(it, "CYNK_DIAG: getChartsPage() FAILED")
-                    reportException(it)
                 }
             }
 
-            // Stage 4: Recents (Local database history)
+            // Stage 4: Recents (Local database history - parallelized)
             viewModelScope.launch(Dispatchers.IO) {
-                val keepListeningSongs = database.mostPlayedSongs(fromTimeStamp, limit = 15, offset = 5)
-                    .first().shuffled().take(10)
-                val keepListeningAlbums = database.mostPlayedAlbums(fromTimeStamp, limit = 8, offset = 2)
-                    .first().filter { it.album.thumbnailUrl != null }.shuffled().take(5)
-                val keepListeningArtists = database.mostPlayedArtists(fromTimeStamp)
-                    .first().filter { it.artist.isYouTubeArtist && it.artist.thumbnailUrl != null }
-                    .shuffled().take(5)
-                val combined = (keepListeningSongs + keepListeningAlbums + keepListeningArtists).shuffled()
-                keepListening.value = combined
+                coroutineScope {
+                    val songsDeferred = async { database.mostPlayedSongs(fromTimeStamp, limit = 15, offset = 5).first() }
+                    val albumsDeferred = async { database.mostPlayedAlbums(fromTimeStamp, limit = 8, offset = 2).first() }
+                    val artistsDeferred = async { database.mostPlayedArtists(fromTimeStamp).first() }
 
-                allLocalItems.value = (quickPicks.value.orEmpty() + combined)
-                    .filter { it is Song || it is Album }
+                    val keepListeningSongs = songsDeferred.await().shuffled().take(10)
+                    val keepListeningAlbums = albumsDeferred.await().filter { it.album.thumbnailUrl != null }.shuffled().take(5)
+                    val keepListeningArtists = artistsDeferred.await().filter { it.artist.isYouTubeArtist && it.artist.thumbnailUrl != null }
+                        .shuffled().take(5)
+                    val combined = (keepListeningSongs + keepListeningAlbums + keepListeningArtists).shuffled()
+                    keepListening.value = combined
+
+                    allLocalItems.value = (quickPicks.value.orEmpty() + combined)
+                        .filter { it is Song || it is Album }
+                }
             }
 
             // Stage 4: For You suggestions (Deferred background)
             viewModelScope.launch(Dispatchers.IO) {
                 try {
-                    forYouSuggestions.value = forYouEngine.getSuggestions(hideExplicit, hideVideo)
+                    val userArtists = getUserPreferredArtists()
+                    val rawSuggestions = forYouEngine.getSuggestions(hideExplicit, hideVideo)
+                    forYouSuggestions.value = CynkContentFilter.filterAndRankSongs(
+                        songs = rawSuggestions,
+                        userPreferredArtists = userArtists,
+                        targetEnglishRatio = 0.70f,
+                        limit = 50
+                    )
                 } catch (_: Exception) {}
             }
 
@@ -209,7 +365,7 @@ class HomeViewModel @Inject constructor(
                             }
                         }
                     }
-                    explorePage.value = page.copy(
+                    val readyExplore = page.copy(
                         newReleaseAlbums = page.newReleaseAlbums
                             .sortedBy { album ->
                                 val artistIds = album.artists.orEmpty().mapNotNull { it.id }
@@ -223,6 +379,8 @@ class HomeViewModel @Inject constructor(
                                 firstArtistKey
                             }.filterExplicit(hideExplicit)
                     )
+                    explorePage.value = readyExplore
+                    cachedExplorePage = readyExplore
                 }.onFailure { reportException(it) }
             }
 
@@ -235,8 +393,8 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun loadSimilarRecommendations() {
-        val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-        val hideVideo = context.dataStore.get(HideVideoKey, false)
+        val hideExplicit = context.dataStore.getAsync(HideExplicitKey, false)
+        val hideVideo = context.dataStore.getAsync(HideVideoKey, false)
         val fromTimeStamp = System.currentTimeMillis() - 86400000 * 7 * 2
         
         val artistRecommendations = database.mostPlayedArtists(fromTimeStamp, limit = 10).first()
@@ -283,8 +441,10 @@ class HomeViewModel @Inject constructor(
         val song = database.events().first().firstOrNull()?.song
         if (song != null) {
             if (database.hasRelatedSongs(song.id)) {
-                val relatedSongs = database.getRelatedSongs(song.id).first().shuffled().take(20)
-                quickPicks.value = relatedSongs
+                val relatedSongs = database.getRelatedSongs(song.id).first()
+                val userArtists = getUserPreferredArtists()
+                val filtered = CynkContentFilter.filterAndRankLocalSongs(relatedSongs, userArtists, limit = 20)
+                quickPicks.value = filtered
             }
         }
     }
@@ -292,21 +452,35 @@ class HomeViewModel @Inject constructor(
     private val _isLoadingMore = MutableStateFlow(false)
     fun loadMoreYouTubeItems(continuation: String?) {
         if (continuation == null || _isLoadingMore.value) return
-        val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-        val hideVideo = context.dataStore.get(HideVideoKey, false)
 
         viewModelScope.launch(Dispatchers.IO) {
             _isLoadingMore.value = true
+            val hideExplicit = context.dataStore.getAsync(HideExplicitKey, false)
+            val hideVideo = context.dataStore.getAsync(HideVideoKey, false)
             val nextSections = YouTube.home(continuation).getOrNull() ?: run {
                 _isLoadingMore.value = false
                 return@launch
             }
 
+            val userArtists = getUserPreferredArtists()
+            val filteredNextSections = nextSections.sections.mapNotNull { section ->
+                val cleanItems = section.items
+                    .filterExplicit(hideExplicit)
+                    .filterVideo(hideVideo)
+                    .filter { item ->
+                        when (item) {
+                            is SongItem -> CynkContentFilter.isAllowed(item.title, item.artists.joinToString { it.name }, item.album?.name, userArtists)
+                            is PlaylistItem -> CynkContentFilter.isAllowed(item.title, item.author?.name.orEmpty(), null, userArtists)
+                            is AlbumItem -> CynkContentFilter.isAllowed(item.title, item.artists.orEmpty().joinToString { it.name }, null, userArtists)
+                            else -> true
+                        }
+                    }
+                if (cleanItems.isNotEmpty()) section.copy(items = cleanItems) else null
+            }
+
             homePage.value = nextSections.copy(
                 chips = homePage.value?.chips,
-                sections = (homePage.value?.sections.orEmpty() + nextSections.sections).map { section ->
-                    section.copy(items = section.items.filterExplicit(hideExplicit).filterVideo(hideVideo))
-                }
+                sections = (homePage.value?.sections.orEmpty() + filteredNextSections)
             )
             _isLoadingMore.value = false
         }
@@ -325,15 +499,29 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-            val hideVideo = context.dataStore.get(HideVideoKey, false)
+            val hideExplicit = context.dataStore.getAsync(HideExplicitKey, false)
+            val hideVideo = context.dataStore.getAsync(HideVideoKey, false)
             val nextSections = YouTube.home(params = chip?.endpoint?.params).getOrNull() ?: return@launch
+            val userArtists = getUserPreferredArtists()
+
+            val filteredSections = nextSections.sections.mapNotNull { section ->
+                val cleanItems = section.items
+                    .filterExplicit(hideExplicit)
+                    .filterVideo(hideVideo)
+                    .filter { item ->
+                        when (item) {
+                            is SongItem -> CynkContentFilter.isAllowed(item.title, item.artists.joinToString { it.name }, item.album?.name, userArtists)
+                            is PlaylistItem -> CynkContentFilter.isAllowed(item.title, item.author?.name.orEmpty(), null, userArtists)
+                            is AlbumItem -> CynkContentFilter.isAllowed(item.title, item.artists.orEmpty().joinToString { it.name }, null, userArtists)
+                            else -> true
+                        }
+                    }
+                if (cleanItems.isNotEmpty()) section.copy(items = cleanItems) else null
+            }
 
             homePage.value = nextSections.copy(
                 chips = homePage.value?.chips,
-                sections = nextSections.sections.map { section ->
-                    section.copy(items = section.items.filterExplicit(hideExplicit).filterVideo(hideVideo))
-                }
+                sections = filteredSections
             )
             selectedChip.value = chip
         }
@@ -471,5 +659,12 @@ class HomeViewModel @Inject constructor(
                     }
                 }
         }
+    }
+
+    companion object {
+        private var cachedHomePage: HomePage? = null
+        private var cachedTrendingSongs: List<SongItem>? = null
+        private var cachedReelsSongs: List<SongItem>? = null
+        private var cachedExplorePage: ExplorePage? = null
     }
 }

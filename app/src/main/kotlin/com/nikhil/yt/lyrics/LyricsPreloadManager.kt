@@ -97,21 +97,19 @@ class LyricsPreloadManager @Inject constructor(
     }
 
     /**
-     * Get the next N songs from the queue after the current index.
+     * Get the current song and next N songs from the queue for preloading.
      */
     private fun getNextSongs(queue: List<MediaMetadata>, currentIndex: Int, count: Int): List<MediaMetadata> {
         if (queue.isEmpty() || currentIndex < 0) {
             return emptyList()
         }
         
+        val currentSong = queue.getOrNull(currentIndex)
         val startIndex = currentIndex + 1
         val endIndex = minOf(startIndex + count, queue.size)
+        val upcoming = if (startIndex < queue.size) queue.subList(startIndex, endIndex) else emptyList()
         
-        if (startIndex >= queue.size) {
-            return emptyList()
-        }
-        
-        return queue.subList(startIndex, endIndex)
+        return if (currentSong != null) listOf(currentSong) + upcoming else upcoming
     }
 
     /**

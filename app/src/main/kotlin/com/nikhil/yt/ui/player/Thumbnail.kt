@@ -587,13 +587,13 @@ fun Thumbnail(
                                                 if ((layoutDirection == LayoutDirection.Ltr && offset.x < size.width / 2) ||
                                                     (layoutDirection == LayoutDirection.Rtl && offset.x > size.width / 2)
                                                 ) {
-                                                    playerConnection.player.seekTo(
+                                                    playerConnection.seekTo(
                                                         (currentPosition - skipAmount).coerceAtLeast(0)
                                                     )
                                                     seekDirection = "-${skipAmount / 1000}s"
 
                                                 } else {
-                                                    playerConnection.player.seekTo(
+                                                    playerConnection.seekTo(
                                                         (currentPosition + skipAmount).coerceAtMost(duration)
                                                     )
                                                     seekDirection = "+${skipAmount / 1000}s"

@@ -248,13 +248,14 @@ class InnerTube {
         params: String? = null,
         continuation: String? = null,
         setLogin: Boolean = false,
+        customLocale: YouTubeLocale? = null,
     ) = withRetry {
         httpClient.post("browse") {
             ytClient(client, setLogin = setLogin || useLoginForBrowse)
             setBody(
                 BrowseBody(
                     context = client.toContext(
-                        locale,
+                        customLocale ?: locale,
                         visitorData,
                         if (setLogin || useLoginForBrowse) dataSyncId else null
                     ),

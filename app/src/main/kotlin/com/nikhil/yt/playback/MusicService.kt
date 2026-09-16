@@ -444,6 +444,7 @@ class MusicService :
         val desiredIsPlaying: Boolean? = null,
         val desiredIndex: Int? = null,
         val desiredTrackId: String? = null,
+        val desiredPositionMs: Long? = null,
         val requestedAtElapsedMs: Long,
         val expiresAtElapsedMs: Long,
     )
@@ -1394,28 +1395,37 @@ class MusicService :
             }
             ensureScopesActive()
             scope.launch(SilentHandler) {
-                val initialStatus =
-                    withContext(Dispatchers.IO) {
-                        queue.getInitialStatus()
-                            .filterExplicit(dataStore.get(HideExplicitKey, false))
-                            .filterVideo(dataStore.get(HideVideoKey, false))
+                val preloadMeta = queue.preloadItem
+                val targetTrack = if (preloadMeta != null && preloadMeta.id.isNotBlank()) {
+                    com.nikhil.yt.together.TogetherTrack(
+                        id = preloadMeta.id.trim(),
+                        title = preloadMeta.title,
+                        artists = preloadMeta.artists.map { it.name },
+                        durationSec = preloadMeta.duration,
+                        thumbnailUrl = preloadMeta.thumbnailUrl,
+                    )
+                } else {
+                    val initialStatus =
+                        withContext(Dispatchers.IO) {
+                            queue.getInitialStatus()
+                                .filterExplicit(dataStore.get(HideExplicitKey, false))
+                                .filterVideo(dataStore.get(HideVideoKey, false))
+                        }
+
+                    val targetItem =
+                        initialStatus.items.getOrNull(initialStatus.mediaItemIndex)
+                            ?: queue.preloadItem?.toMediaItem()
+
+                    val meta = targetItem?.metadata
+                    val trackId =
+                        meta?.id?.trim().orEmpty().ifBlank {
+                            targetItem?.mediaId?.trim().orEmpty()
+                        }
+                    if (trackId.isBlank()) {
+                        showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_PLAYQUEUE_NO_TRACK")
+                        return@launch
                     }
 
-                val targetItem =
-                    initialStatus.items.getOrNull(initialStatus.mediaItemIndex)
-                        ?: queue.preloadItem?.toMediaItem()
-
-                val meta = targetItem?.metadata
-                val trackId =
-                    meta?.id?.trim().orEmpty().ifBlank {
-                        targetItem?.mediaId?.trim().orEmpty()
-                    }
-                if (trackId.isBlank()) {
-                    showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_PLAYQUEUE_NO_TRACK")
-                    return@launch
-                }
-
-                val track =
                     com.nikhil.yt.together.TogetherTrack(
                         id = trackId,
                         title = meta?.title ?: trackId,
@@ -1423,12 +1433,13 @@ class MusicService :
                         durationSec = meta?.duration ?: -1,
                         thumbnailUrl = meta?.thumbnailUrl,
                     )
+                }
 
                 val ops =
                     com.nikhil.yt.together.TogetherGuestPlaybackPlanner.planPlayTrackNow(
                         roomState = joined.roomState,
-                        track = track,
-                        positionMs = initialStatus.position,
+                        track = targetTrack,
+                        positionMs = 0L,
                         playWhenReady = playWhenReady,
                     )
 
@@ -1437,7 +1448,6 @@ class MusicService :
                     return@launch
                 }
 
-                showTogetherNotice(getString(R.string.together_requesting_song_change), key = "GUEST_PLAYQUEUE_REQUEST")
                 ops.forEach { op ->
                     when (op) {
                         is com.nikhil.yt.together.TogetherGuestOp.Control -> requestTogetherControl(op.action)
@@ -2687,6 +2697,8 @@ class MusicService :
                     TogetherPendingGuestControl(desiredIsPlaying = true, requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
                 com.nikhil.yt.together.ControlAction.Pause ->
                     TogetherPendingGuestControl(desiredIsPlaying = false, requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
+                is com.nikhil.yt.together.ControlAction.SeekTo ->
+                    TogetherPendingGuestControl(desiredPositionMs = action.positionMs, requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
                 is com.nikhil.yt.together.ControlAction.SeekToIndex ->
                     TogetherPendingGuestControl(desiredIndex = action.index.coerceAtLeast(0), requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
                 is com.nikhil.yt.together.ControlAction.SeekToTrack ->
@@ -3063,7 +3075,8 @@ class MusicService :
             val mismatch =
                 (pending.desiredIsPlaying != null && state.isPlaying != pending.desiredIsPlaying) ||
                     (pending.desiredIndex != null && state.currentIndex != pending.desiredIndex) ||
-                    (pending.desiredTrackId != null && currentTrackId != pending.desiredTrackId)
+                    (pending.desiredTrackId != null && currentTrackId != pending.desiredTrackId) ||
+                    (pending.desiredPositionMs != null && kotlin.math.abs(state.positionMs - pending.desiredPositionMs) > 2000L)
             if (now >= pending.expiresAtElapsedMs) {
                 if ((pending.desiredIndex != null || pending.desiredTrackId != null) &&
                     now - pending.requestedAtElapsedMs >= 1200L &&

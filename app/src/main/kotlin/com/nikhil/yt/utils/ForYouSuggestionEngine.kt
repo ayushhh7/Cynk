@@ -13,6 +13,9 @@ import com.nikhil.yt.innertube.models.WatchEndpoint
 import com.nikhil.yt.innertube.models.filterExplicit
 import com.nikhil.yt.innertube.models.filterVideo
 import com.nikhil.yt.innertube.models.SongItem
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import java.time.LocalTime
 import javax.inject.Inject
@@ -102,11 +105,22 @@ class ForYouSuggestionEngine @Inject constructor(
         val fromTimeStamp = System.currentTimeMillis() - 86400000L * 30 // last 30 days
         val timeOfDay = getTimeOfDay()
 
-        // Fetch local data
-        val allSongs = database.mostPlayedSongs(fromTimeStamp, limit = 100).first()
-        val likedSongs = database.likedSongsByPlayTimeAsc().first()
-        val skips = database.getAllSkips().first()
-        val recentEvents = database.events().first().take(20)
+        // Fetch local data in parallel
+        val allSongs: List<Song>
+        val likedSongs: List<Song>
+        val skips: List<SongSkipEntity>
+        val recentEvents: List<com.nikhil.yt.db.entities.EventWithSong>
+        coroutineScope {
+            val allSongsDeferred = async { database.mostPlayedSongs(fromTimeStamp, limit = 100).first() }
+            val likedSongsDeferred = async { database.likedSongsByPlayTimeAsc().first() }
+            val skipsDeferred = async { database.getAllSkips().first() }
+            val recentEventsDeferred = async { database.events().first().take(20) }
+
+            allSongs = allSongsDeferred.await()
+            likedSongs = likedSongsDeferred.await()
+            skips = skipsDeferred.await()
+            recentEvents = recentEventsDeferred.await()
+        }
 
         val likedIds = likedSongs.map { it.id }.toSet()
         val recentIds = recentEvents.mapNotNull { it.song?.id }.toSet()
@@ -118,31 +132,42 @@ class ForYouSuggestionEngine @Inject constructor(
             .sortedByDescending { it.second }
             .map { it.first }
 
-        // Use top scored songs as seeds for YouTube related songs
-        val seedSongs = scoredSongs.take(5)
+        // Use top scored songs as seeds for YouTube related songs (bounded concurrency of 4 seeds)
+        val seedSongs = scoredSongs.take(4)
+
+        val seedResults: List<List<SongItem>> = coroutineScope {
+            seedSongs.map { seed ->
+                async {
+                    try {
+                        val endpoint = YouTube.next(
+                            WatchEndpoint(videoId = seed.id)
+                        ).getOrNull()?.relatedEndpoint ?: return@async emptyList()
+
+                        val related = YouTube.related(endpoint).getOrNull() ?: return@async emptyList()
+
+                        related.songs
+                            .filterExplicit(hideExplicit)
+                            .filterVideo(hideVideo)
+                            .shuffled()
+                            .take(15)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
+        }
 
         val suggestions = mutableListOf<SongItem>()
         val seenIds = mutableSetOf<String>()
 
-        for (seed in seedSongs) {
+        for (songList in seedResults) {
+            for (song in songList) {
+                if (suggestions.size >= MAX_SUGGESTIONS) break
+                if (seenIds.add(song.id)) {
+                    suggestions.add(song)
+                }
+            }
             if (suggestions.size >= MAX_SUGGESTIONS) break
-            try {
-                val endpoint = YouTube.next(
-                    WatchEndpoint(videoId = seed.id)
-                ).getOrNull()?.relatedEndpoint ?: continue
-
-                val related = YouTube.related(endpoint).getOrNull() ?: continue
-
-                val filtered = related.songs
-                    .filterExplicit(hideExplicit)
-                    .filterVideo(hideVideo)
-                    .filter { it.id !in seenIds }
-                    .shuffled()
-                    .take(10)
-
-                suggestions.addAll(filtered)
-                seenIds.addAll(filtered.map { it.id })
-            } catch (_: Exception) {}
         }
 
         // Fill remaining from liked songs radio if needed
@@ -164,7 +189,11 @@ class ForYouSuggestionEngine @Inject constructor(
                             ?.take(MAX_SUGGESTIONS - suggestions.size)
                             ?: emptyList()
 
-                        suggestions.addAll(filtered)
+                        for (s in filtered) {
+                            if (seenIds.add(s.id)) {
+                                suggestions.add(s)
+                            }
+                        }
                     }
                 } catch (_: Exception) {}
             }

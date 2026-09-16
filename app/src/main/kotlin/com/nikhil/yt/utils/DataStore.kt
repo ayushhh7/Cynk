@@ -94,12 +94,12 @@ fun <T> DataStore<Preferences>.get(
         }
 
 suspend fun <T> DataStore<Preferences>.getAsync(key: Preferences.Key<T>): T? =
-    data.first()[key]
+    PreferenceStore.get(key) ?: data.first()[key]
 
 suspend fun <T> DataStore<Preferences>.getAsync(
     key: Preferences.Key<T>,
     defaultValue: T,
-): T = data.first()[key] ?: defaultValue
+): T = PreferenceStore.get(key) ?: data.first()[key] ?: defaultValue
 
 fun <T> preference(
     context: Context,

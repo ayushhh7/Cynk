@@ -601,12 +601,36 @@ object YouTube {
         )
     }
 
+    val defaultJson = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+        encodeDefaults = true
+    }
+
+    @Volatile
+    var lastHomeRawResponse: String? = null
+
+    @Volatile
+    var lastChartsRawResponse: String? = null
+
     suspend fun home(continuation: String? = null, params: String? = null): Result<HomePage> = runCatching {
         if (continuation != null) {
             return@runCatching homeContinuation(continuation).getOrThrow()
         }
 
-        val response = innerTube.browse(WEB_REMIX, browseId = "FEmusic_home", params = params, setLogin = true).body<BrowseResponse>()
+        val httpResponse = innerTube.browse(WEB_REMIX, browseId = "FEmusic_home", params = params, setLogin = true)
+        val rawJson = httpResponse.bodyAsText()
+        lastHomeRawResponse = rawJson
+        val response = defaultJson.decodeFromString<BrowseResponse>(rawJson)
+        parseBrowseResponse(response)
+    }
+
+    fun parseHomeFromRawJson(rawJson: String): Result<HomePage> = runCatching {
+        val response = defaultJson.decodeFromString<BrowseResponse>(rawJson)
+        parseBrowseResponse(response)
+    }
+
+    private fun parseBrowseResponse(response: BrowseResponse): HomePage {
         val continuation = response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
             ?.tabRenderer?.content?.sectionListRenderer?.continuations?.getContinuation()
         val sectionListRender = response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
@@ -617,7 +641,7 @@ object YouTube {
                     ?: content.musicShelfRenderer?.let { HomePage.Section.fromMusicShelfRenderer(it) }
             }.toMutableList()
         val chips = sectionListRender?.header?.chipCloudRenderer?.chips?.mapNotNull { HomePage.Chip.fromChipCloudChipRenderer(it) }
-        HomePage(chips, sections, continuation)
+        return HomePage(chips, sections, continuation)
     }
 
     private suspend fun homeContinuation(continuation: String): Result<HomePage> = runCatching {
@@ -857,22 +881,39 @@ object YouTube {
         )
     }
 
-    suspend fun getChartsPage(continuation: String? = null): Result<ChartsPage> = runCatching {
-        val response = try {
+    suspend fun getChartsPage(continuation: String? = null, countryCode: String? = null): Result<ChartsPage> = runCatching {
+        val customLocale = countryCode?.let { YouTubeLocale(gl = it, hl = "en") }
+        val httpResponse = try {
             innerTube.browse(
                 client = WEB_REMIX,
                 browseId = "FEmusic_charts",
                 params = "ggMGCgQIgAQ%3D",
-                continuation = continuation
-            ).body<BrowseResponse>()
+                continuation = continuation,
+                customLocale = customLocale,
+            )
         } catch (_: Exception) {
             innerTube.browse(
                 client = WEB_REMIX,
                 browseId = "FEmusic_charts",
-                continuation = continuation
-            ).body<BrowseResponse>()
+                continuation = continuation,
+                customLocale = customLocale,
+            )
         }
 
+        val rawJson = httpResponse.bodyAsText()
+        if (countryCode == null || countryCode.equals("US", ignoreCase = true)) {
+            lastChartsRawResponse = rawJson
+        }
+        val response = defaultJson.decodeFromString<BrowseResponse>(rawJson)
+        parseChartsResponse(response)
+    }
+
+    suspend fun parseChartsFromRawJson(rawJson: String): Result<ChartsPage> = runCatching {
+        val response = defaultJson.decodeFromString<BrowseResponse>(rawJson)
+        parseChartsResponse(response)
+    }
+
+    private suspend fun parseChartsResponse(response: BrowseResponse): ChartsPage {
         val sections = mutableListOf<ChartsPage.ChartSection>()
 
         val sectionListRenderer = response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
@@ -985,7 +1026,7 @@ object YouTube {
             }
         }
 
-        ChartsPage(
+        return ChartsPage(
             sections = sections,
             continuation = response.continuationContents?.sectionListContinuation?.continuations?.getContinuation()
         )

@@ -483,7 +483,7 @@ fun LyricsV2(
                         .then(
                             if (lyricsClick && isSynced && item.time > 0) {
                                 Modifier.clickable {
-                                    player.seekTo(item.time)
+                                    playerConnection.seekTo(item.time)
                                 }
                             } else Modifier
                         ),

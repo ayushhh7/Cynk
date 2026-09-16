@@ -124,6 +124,8 @@ import androidx.compose.runtime.getValue
 import com.nikhil.yt.innertube.toHighResThumbnail
 import com.nikhil.yt.viewmodels.HomeViewModel
 
+private val PREFERRED_MOOD_CHIPS = listOf("Feel good", "Relax", "Romance", "Party", "Energize", "Focus", "Sad", "Angry")
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CynkMoodChipsRow(
@@ -132,14 +134,16 @@ fun CynkMoodChipsRow(
     onExistingChipSelected: (com.nikhil.yt.innertube.pages.HomePage.Chip?) -> Unit,
     onCustomMoodSelected: (String) -> Unit,
 ) {
-    val preferred = listOf("Feel good", "Relax", "Romance", "Party", "Energize", "Focus", "Sad", "Angry")
-    val byTitle = availableChips.associateBy { it.title.lowercase() }
+    val byTitle = remember(availableChips) { availableChips.associateBy { it.title.lowercase() } }
 
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
     ) {
-        items(preferred) { label ->
+        items(
+            items = PREFERRED_MOOD_CHIPS,
+            key = { it }
+        ) { label ->
             val existing = byTitle[label.lowercase()]
             val selected = existing != null && selectedChip?.title == existing.title
             androidx.compose.material3.FilterChip(
@@ -324,14 +328,21 @@ fun KeepListeningSection(
     modifier: Modifier = Modifier
 ) {
     val rows = if (keepListening.size > 6) 2 else 1
-    val gridHeight = (GridThumbnailHeight + with(LocalDensity.current) {
-        MaterialTheme.typography.bodyLarge.lineHeight.toDp() * 2 +
-                MaterialTheme.typography.bodyMedium.lineHeight.toDp() * 2
-    }) * rows
+    val density = LocalDensity.current
+    val bodyLargeLineHeight = MaterialTheme.typography.bodyLarge.lineHeight
+    val bodyMediumLineHeight = MaterialTheme.typography.bodyMedium.lineHeight
+    val gridHeight = remember(rows, density, bodyLargeLineHeight, bodyMediumLineHeight) {
+        (GridThumbnailHeight + with(density) {
+            bodyLargeLineHeight.toDp() * 2 + bodyMediumLineHeight.toDp() * 2
+        }) * rows
+    }
 
     LazyHorizontalGrid(
         state = rememberLazyGridState(),
         rows = GridCells.Fixed(rows),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier
             .fillMaxWidth()
             .height(gridHeight)
@@ -345,7 +356,8 @@ fun KeepListeningSection(
                     is Artist -> "artist_${item.id}"
                     is Playlist -> "playlist_${item.id}"
                 }
-            }
+            },
+            contentType = { item -> item::class.java.simpleName }
         ) { item ->
             LocalGridItem(
                 item = item,
@@ -550,7 +562,7 @@ fun HomePageSectionContent(
     scope: CoroutineScope,
     modifier: Modifier = Modifier
 ) {
-    val songs = section.items.filterIsInstance<SongItem>()
+    val songs = remember(section) { section.items.filterIsInstance<SongItem>() }
     if (songs.isNotEmpty() && songs.size >= section.items.size / 2) {
         CynkYouTubeSongListSection(
             songs = songs,
@@ -564,14 +576,14 @@ fun HomePageSectionContent(
         )
     } else {
         LazyRow(
-            contentPadding = WindowInsets.systemBars
-                .only(WindowInsetsSides.Horizontal)
-                .asPaddingValues(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = modifier
         ) {
             items(
                 items = section.items,
-                key = { it.id }
+                key = { it.id },
+                contentType = { item -> item::class.java.simpleName }
             ) { item ->
                 YouTubeGridItemWrapper(
                     item = item,
@@ -604,7 +616,7 @@ fun CynkSongListSectionHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 12.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -1033,7 +1045,7 @@ fun CynkYouTubeSongListSection(
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 pageSongs.forEach { song ->
                     CynkYouTubeSongRow(
@@ -1070,13 +1082,14 @@ fun CynkAlbumCardsSection(
     if (distinctAlbums.isEmpty()) return
 
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         items(
             items = distinctAlbums,
-            key = { it.id }
+            key = { it.id },
+            contentType = { "album_card" }
         ) { album ->
             Box(modifier = Modifier.width(190.dp)) {
                 YouTubeGridItemWrapper(
@@ -1188,9 +1201,10 @@ private fun YouTubeGridItemWrapper(
     scope: CoroutineScope,
     modifier: Modifier = Modifier
 ) {
+    val isActive = item.id == mediaMetadata?.id || (mediaMetadata?.album?.id != null && item.id == mediaMetadata.album.id)
     YouTubeGridItem(
         item = item,
-        isActive = item.id in listOf(mediaMetadata?.album?.id, mediaMetadata?.id),
+        isActive = isActive,
         isPlaying = isPlaying,
         coroutineScope = scope,
         thumbnailRatio = 1f,
@@ -1565,7 +1579,7 @@ fun QuickPicksListSection(
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 pageSongs.forEach { song ->
                     CynkLocalSongRow(
@@ -1602,7 +1616,7 @@ fun CommunityPlaylistsSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -1613,8 +1627,8 @@ fun CommunityPlaylistsSection(
         }
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 12.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             items(
@@ -1654,14 +1668,16 @@ fun LocalAlbumSuggestionsSection(
     haptic: HapticFeedback,
     scope: CoroutineScope,
 ) {
+    val distinctAlbums = remember(albums) { albums.distinctBy { it.id } }
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         items(
-            items = albums.distinctBy { it.id },
-            key = { it.id }
+            items = distinctAlbums,
+            key = { it.id },
+            contentType = { "local_album" }
         ) { album ->
             AlbumGridItem(
                 album = album,
@@ -1674,6 +1690,13 @@ fun LocalAlbumSuggestionsSection(
     }
 }
 
+private val EXPLORE_CARDS = listOf(
+    Triple("New releases", R.drawable.new_release, "new_release"),
+    Triple("Charts", R.drawable.trending_up, "charts_screen"),
+    Triple("Moods & genres", R.drawable.mood, "mood_and_genres"),
+    Triple("Podcasts", R.drawable.radio, "search/podcast"),
+)
+
 @Composable
 fun ExploreHomeSection(
     navController: NavController,
@@ -1683,7 +1706,7 @@ fun ExploreHomeSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -1693,18 +1716,11 @@ fun ExploreHomeSection(
             )
         }
 
-        val cards = listOf(
-            Triple("New releases", R.drawable.new_release, "new_release"),
-            Triple("Charts", R.drawable.trending_up, "charts_screen"),
-            Triple("Moods & genres", R.drawable.mood, "mood_and_genres"),
-            Triple("Podcasts", R.drawable.radio, "search/podcast"),
-        )
-
         androidx.compose.foundation.layout.Column(
-            modifier = Modifier.padding(horizontal = 12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp),
             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
         ) {
-            cards.chunked(2).forEach { rowCards ->
+            EXPLORE_CARDS.chunked(2).forEach { rowCards ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
@@ -1761,6 +1777,8 @@ fun ForYouSection(
 ) {
     if (suggestions.isEmpty()) return
 
+    val coroutineScope = rememberCoroutineScope()
+
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -1787,7 +1805,8 @@ fun ForYouSection(
         ) {
             items(
                 items = suggestions,
-                key = { it.id }
+                key = { it.id },
+                contentType = { "for_you_song_card" }
             ) { song ->
                 Box(modifier = Modifier.width(190.dp)) {
                     YouTubeGridItemWrapper(
@@ -1798,7 +1817,7 @@ fun ForYouSection(
                         playerConnection = playerConnection,
                         menuState = menuState,
                         haptic = haptic,
-                        scope = rememberCoroutineScope()
+                        scope = coroutineScope
                     )
                 }
             }

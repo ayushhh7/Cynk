@@ -94,6 +94,14 @@ import kotlin.random.Random
 
 
 
+private fun sectionMatches(
+    section: com.nikhil.yt.innertube.pages.HomePage.Section,
+    vararg terms: String
+): Boolean {
+    val normalized = section.title.lowercase()
+    return terms.any { normalized.contains(it) }
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -108,7 +116,6 @@ fun HomeScreen(
 
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
-    val togetherSessionState by playerConnection.service.togetherSessionState.collectAsState()
 
     val quickPicks by viewModel.quickPicks.collectAsState()
     val trendingSongs by viewModel.trendingSongs.collectAsState()
@@ -284,7 +291,7 @@ fun HomeScreen(
             ) {}
         }
 
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pullToRefresh(
@@ -297,45 +304,87 @@ fun HomeScreen(
                 homePage?.sections.orEmpty()
             }
 
-            fun sectionMatches(
-                section: com.nikhil.yt.innertube.pages.HomePage.Section,
-                vararg terms: String
-            ): Boolean {
-                val normalized = section.title.lowercase()
-                return terms.any { normalized.contains(it) }
-            }
-
             val quickPicksYtSection = remember(homeSections) {
-                homeSections.firstOrNull { sectionMatches(it, "quick picks", "quick pick") }
+                homeSections.firstOrNull {
+                    sectionMatches(it, "quick picks", "quick pick", "listen again", "start radio")
+                } ?: homeSections.firstOrNull { it.items.any { item -> item is SongItem } }
             }
 
-            val featuredPlaylistsSection = remember(homeSections) {
-                homeSections.firstOrNull {
-                    sectionMatches(
-                        it,
-                        "featured playlists",
-                        "featured playlist",
-                        "top weekly",
+            val quickPicksFromSections = remember(quickPicksYtSection) {
+                quickPicksYtSection?.items?.filterIsInstance<SongItem>()
+            }
+
+            val fallbackQuickPicks: List<SongItem> = remember(quickPicksFromSections, allYtItems) {
+                quickPicksFromSections
+                    ?: allYtItems.filterIsInstance<SongItem>().distinctBy { it.id }.take(24)
+            }
+
+            val featuredPlaylistsSection = remember(homeSections, quickPicksYtSection) {
+                homeSections.firstOrNull { sec ->
+                    sec != quickPicksYtSection && (
+                        sectionMatches(
+                            sec,
+                            "featured playlist",
+                            "playlist",
+                            "top weekly",
+                            "curated",
+                            "mix",
+                            "hits",
+                            "soundtrack",
+                            "recommended playlist"
+                        ) || sec.items.all { it is PlaylistItem }
                     )
                 }
             }
 
-            val albumsForYouSection = remember(homeSections) {
-                homeSections.firstOrNull {
-                    sectionMatches(it, "albums for you")
+            val albumsForYouSection = remember(homeSections, quickPicksYtSection, featuredPlaylistsSection) {
+                homeSections.firstOrNull { sec ->
+                    sec != quickPicksYtSection && sec != featuredPlaylistsSection && (
+                        (sectionMatches(sec, "albums for you", "album", "recommended album") &&
+                         !sectionMatches(sec, "featuring", "like")) ||
+                        sec.items.all { it is AlbumItem }
+                    )
                 }
             }
 
-            val albumsFeaturingSection = remember(homeSections) {
-                homeSections.firstOrNull {
-                    sectionMatches(it, "albums featuring songs you like")
+            val albumsForYouItems = remember(albumsForYouSection) {
+                albumsForYouSection?.items?.filterIsInstance<AlbumItem>().orEmpty()
+            }
+
+            val albumsFeaturingSection = remember(homeSections, quickPicksYtSection, featuredPlaylistsSection, albumsForYouSection) {
+                homeSections.firstOrNull { sec ->
+                    sec != quickPicksYtSection && sec != featuredPlaylistsSection && sec != albumsForYouSection &&
+                    sectionMatches(sec, "albums featuring", "featuring songs", "featuring")
                 }
             }
 
-            val newReleasesSection = remember(homeSections) {
-                homeSections.firstOrNull {
-                    sectionMatches(it, "new releases", "new release")
+            val albumsFeaturingItems = remember(albumsFeaturingSection) {
+                albumsFeaturingSection?.items?.filterIsInstance<AlbumItem>().orEmpty()
+            }
+
+            val newReleasesSection = remember(homeSections, quickPicksYtSection, featuredPlaylistsSection, albumsForYouSection, albumsFeaturingSection) {
+                homeSections.firstOrNull { sec ->
+                    sec != quickPicksYtSection && sec != featuredPlaylistsSection && sec != albumsForYouSection && sec != albumsFeaturingSection &&
+                    sectionMatches(sec, "new release", "new album", "fresh", "latest")
                 }
+            }
+
+            val quickPickSongIds = remember(quickPicks, fallbackQuickPicks) {
+                val ids = mutableSetOf<String>()
+                quickPicks?.forEach { ids.add(it.id) }
+                if (ids.isEmpty()) {
+                    fallbackQuickPicks.forEach { ids.add(it.id) }
+                }
+                ids
+            }
+
+            val dedupedTrendingSongs = remember(trendingSongs, quickPickSongIds) {
+                trendingSongs?.filterNot { it.id in quickPickSongIds }
+            }
+
+            val dedupedReelsSongs = remember(reelsSongs, quickPickSongIds, dedupedTrendingSongs) {
+                val trendingIds = dedupedTrendingSongs.orEmpty().map { it.id }.toSet()
+                reelsSongs?.filterNot { it.id in quickPickSongIds || it.id in trendingIds }
             }
 
             LazyColumn(
@@ -344,7 +393,7 @@ fun HomeScreen(
             ) {
                 // 1. Header Mood Chips
                 if (showHomeCategoryChips) {
-                    item(key = "mood_chips") {
+                    item(key = "mood_chips", contentType = "mood_chips") {
                         CynkMoodChipsRow(
                             availableChips = homePage?.chips.orEmpty(),
                             selectedChip = selectedChip,
@@ -360,7 +409,7 @@ fun HomeScreen(
 
                 // 2. Quick Picks (SONG section, exactly once)
                 quickPicks?.takeIf { it.isNotEmpty() }?.let { picks ->
-                    item(key = "quick_picks_local") {
+                    item(key = "quick_picks_local", contentType = "song_list_pager") {
                         QuickPicksListSection(
                             quickPicks = picks,
                             accountImageUrl = url,
@@ -374,13 +423,8 @@ fun HomeScreen(
                         )
                     }
                 } ?: run {
-                    val quickPicksFromSections = quickPicksYtSection?.items?.filterIsInstance<SongItem>()
-
-                    val fallbackQuickPicks: List<SongItem> = quickPicksFromSections
-                        ?: allYtItems.filterIsInstance<SongItem>().distinctBy { it.id }.take(24)
-
                     if (fallbackQuickPicks.isNotEmpty()) {
-                        item(key = "quick_picks_yt") {
+                        item(key = "quick_picks_yt", contentType = "song_list_pager") {
                             CynkYouTubeSongListSection(
                                 title = "Quick picks",
                                 avatarUrl = url,
@@ -401,14 +445,14 @@ fun HomeScreen(
 
                 // 3. Featured playlists for you
                 featuredPlaylistsSection?.let { section ->
-                    item(key = "featured_playlists_title") {
+                    item(key = "featured_playlists_title", contentType = "section_title") {
                         HomePageSectionTitle(
                             section = section.copy(title = "Featured playlists for you"),
                             navController = navController,
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier.padding(top = 16.dp).animateItem(),
                         )
                     }
-                    item(key = "featured_playlists_content") {
+                    item(key = "featured_playlists_content", contentType = "section_content") {
                         HomePageSectionContent(
                             section = section,
                             mediaMetadata = mediaMetadata,
@@ -424,19 +468,18 @@ fun HomeScreen(
                 }
 
                 // 4. Albums for you
-                albumsForYouSection?.let { section ->
-                    val albums = section.items.filterIsInstance<AlbumItem>()
-                    if (albums.isNotEmpty()) {
-                        item(key = "albums_for_you_title") {
+                if (albumsForYouItems.isNotEmpty()) {
+                    albumsForYouSection?.let { section ->
+                        item(key = "albums_for_you_title", contentType = "section_title") {
                             HomePageSectionTitle(
                                 section = section.copy(title = "Albums for you"),
                                 navController = navController,
-                                modifier = Modifier.animateItem(),
+                                modifier = Modifier.padding(top = 16.dp).animateItem(),
                             )
                         }
-                        item(key = "albums_for_you_content") {
+                        item(key = "albums_for_you_content", contentType = "album_cards") {
                             CynkAlbumCardsSection(
-                                albums = albums,
+                                albums = albumsForYouItems,
                                 mediaMetadata = mediaMetadata,
                                 isPlaying = isPlaying,
                                 navController = navController,
@@ -451,8 +494,8 @@ fun HomeScreen(
                 }
 
                 // 5. Trending — SONGS
-                trendingSongs?.takeIf { it.isNotEmpty() }?.let { songs ->
-                    item(key = "trending_songs") {
+                dedupedTrendingSongs?.takeIf { it.isNotEmpty() }?.let { songs ->
+                    item(key = "trending_songs", contentType = "song_list_pager") {
                         CynkYouTubeSongListSection(
                             title = "Trending",
                             showPlayAll = true,
@@ -469,8 +512,8 @@ fun HomeScreen(
                 }
 
                 // 6. Heard in Reels — SONGS
-                reelsSongs?.takeIf { it.isNotEmpty() }?.let { songs ->
-                    item(key = "reels_songs") {
+                dedupedReelsSongs?.takeIf { it.isNotEmpty() }?.let { songs ->
+                    item(key = "reels_songs", contentType = "song_list_pager") {
                         CynkYouTubeSongListSection(
                             title = "Heard in Reels",
                             showPlayAll = true,
@@ -488,13 +531,13 @@ fun HomeScreen(
 
                 // 7. Recents (Recently played) — conditional
                 keepListening?.takeIf { it.isNotEmpty() }?.let { items ->
-                    item(key = "recents_title") {
+                    item(key = "recents_title", contentType = "section_title") {
                         NavigationTitle(
                             title = "Recents",
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier.padding(top = 16.dp).animateItem(),
                         )
                     }
-                    item(key = "recents_content") {
+                    item(key = "recents_content", contentType = "recents_grid") {
                         KeepListeningSection(
                             keepListening = items,
                             mediaMetadata = mediaMetadata,
@@ -510,7 +553,7 @@ fun HomeScreen(
 
                 // 8. More of what you like — conditional
                 forYouSuggestions?.takeIf { it.isNotEmpty() }?.let { suggestions ->
-                    item(key = "more_of_what_you_like") {
+                    item(key = "more_of_what_you_like", contentType = "for_you_row") {
                         ForYouSection(
                             suggestions = suggestions,
                             mediaMetadata = mediaMetadata,
@@ -519,25 +562,24 @@ fun HomeScreen(
                             playerConnection = playerConnection,
                             menuState = menuState,
                             haptic = haptic,
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier.padding(top = 16.dp).animateItem(),
                         )
                     }
                 }
 
                 // 9. Albums featuring songs you like — conditional
-                albumsFeaturingSection?.let { section ->
-                    val albums = section.items.filterIsInstance<AlbumItem>()
-                    if (albums.isNotEmpty()) {
-                        item(key = "albums_featuring_title") {
+                if (albumsFeaturingItems.isNotEmpty()) {
+                    albumsFeaturingSection?.let { section ->
+                        item(key = "albums_featuring_title", contentType = "section_title") {
                             HomePageSectionTitle(
                                 section = section.copy(title = "Albums featuring songs you like"),
                                 navController = navController,
-                                modifier = Modifier.animateItem(),
+                                modifier = Modifier.padding(top = 16.dp).animateItem(),
                             )
                         }
-                        item(key = "albums_featuring_content") {
+                        item(key = "albums_featuring_content", contentType = "album_cards") {
                             CynkAlbumCardsSection(
-                                albums = albums,
+                                albums = albumsFeaturingItems,
                                 mediaMetadata = mediaMetadata,
                                 isPlaying = isPlaying,
                                 navController = navController,
@@ -549,40 +591,38 @@ fun HomeScreen(
                             )
                         }
                     }
-                } ?: run {
-                    if (recentPlayedAlbums.isNotEmpty()) {
-                        item(key = "local_albums_featuring_title") {
-                            NavigationTitle(
-                                title = "Albums featuring songs you like",
-                                modifier = Modifier.animateItem(),
-                            )
-                        }
+                } else if (recentPlayedAlbums.isNotEmpty()) {
+                    item(key = "local_albums_featuring_title", contentType = "section_title") {
+                        NavigationTitle(
+                            title = "Albums featuring songs you like",
+                            modifier = Modifier.padding(top = 16.dp).animateItem(),
+                        )
+                    }
 
-                        item(key = "local_albums_featuring_content") {
-                            LocalAlbumSuggestionsSection(
-                                albums = recentPlayedAlbums,
-                                navController = navController,
-                                playerConnection = playerConnection,
-                                mediaMetadata = mediaMetadata,
-                                isPlaying = isPlaying,
-                                menuState = menuState,
-                                haptic = haptic,
-                                scope = scope,
-                            )
-                        }
+                    item(key = "local_albums_featuring_content", contentType = "album_cards") {
+                        LocalAlbumSuggestionsSection(
+                            albums = recentPlayedAlbums,
+                            navController = navController,
+                            playerConnection = playerConnection,
+                            mediaMetadata = mediaMetadata,
+                            isPlaying = isPlaying,
+                            menuState = menuState,
+                            haptic = haptic,
+                            scope = scope,
+                        )
                     }
                 }
 
                 // 10. New Releases
                 newReleasesSection?.let { section ->
-                    item(key = "new_releases_title") {
+                    item(key = "new_releases_title", contentType = "section_title") {
                         HomePageSectionTitle(
                             section = section.copy(title = "New Releases"),
                             navController = navController,
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier.padding(top = 16.dp).animateItem(),
                         )
                     }
-                    item(key = "new_releases_content") {
+                    item(key = "new_releases_content", contentType = "section_content") {
                         HomePageSectionContent(
                             section = section,
                             mediaMetadata = mediaMetadata,
@@ -598,7 +638,7 @@ fun HomeScreen(
                 }
 
                 // 11. Explore — LAST
-                item(key = "explore_home") {
+                item(key = "explore_home", contentType = "explore_home") {
                     ExploreHomeSection(navController = navController)
                 }
             }
@@ -644,61 +684,12 @@ fun HomeScreen(
                 }
             )
 
-            AnimatedVisibility(
-                visible = lazylistState.isScrollingUp(),
-                enter = slideInVertically { it },
-                exit = slideOutVertically { it },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .windowInsetsPadding(
-                        LocalPlayerAwareWindowInsets.current
-                            .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal),
-                    )
-                    .padding(start = 16.dp, bottom = 16.dp),
-            ) {
-                val isJamActive = togetherSessionState is TogetherSessionState.HostingOnline ||
-                    togetherSessionState is TogetherSessionState.Joined ||
-                    togetherSessionState is TogetherSessionState.Reconnecting ||
-                    togetherSessionState is TogetherSessionState.JoiningOnline
-
-                val jamLabel = when (val state = togetherSessionState) {
-                    is TogetherSessionState.HostingOnline -> {
-                        val count = state.roomState?.participants?.size ?: 1
-                        "Jam • $count"
-                    }
-                    is TogetherSessionState.Joined -> {
-                        val count = state.roomState.participants.size
-                        "Jam • $count"
-                    }
-                    is TogetherSessionState.Reconnecting -> "Jam • Reconnecting"
-                    is TogetherSessionState.JoiningOnline -> "Jam • Joining"
-                    else -> "Jam"
-                }
-
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        navController.navigate("settings/music_together")
-                    },
-                    icon = {
-                        Icon(
-                            painter = painterResource(if (isJamActive) R.drawable.fire else R.drawable.multi_user),
-                            contentDescription = "Cynk Together Jam",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    },
-                    text = {
-                        Text(
-                            text = jamLabel,
-                            fontWeight = FontWeight.SemiBold,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    },
-                    containerColor = if (isJamActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = if (isJamActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                    shape = RoundedCornerShape(20.dp),
-                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
-                )
-            }
+            JamBottomFab(
+                playerConnection = playerConnection,
+                lazylistState = lazylistState,
+                navController = navController,
+                modifier = Modifier.align(Alignment.BottomStart),
+            )
 
             Indicator(
                 isRefreshing = isRefreshing,
@@ -708,5 +699,70 @@ fun HomeScreen(
                     .padding(LocalPlayerAwareWindowInsets.current.asPaddingValues()),
             )
         }
+    }
+}
+
+@Composable
+private fun JamBottomFab(
+    playerConnection: com.nikhil.yt.playback.PlayerConnection,
+    lazylistState: androidx.compose.foundation.lazy.LazyListState,
+    navController: NavController,
+    modifier: Modifier = Modifier,
+) {
+    val togetherSessionState by playerConnection.service.togetherSessionState.collectAsState()
+
+    AnimatedVisibility(
+        visible = lazylistState.isScrollingUp(),
+        enter = slideInVertically { it },
+        exit = slideOutVertically { it },
+        modifier = modifier
+            .windowInsetsPadding(
+                LocalPlayerAwareWindowInsets.current
+                    .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal),
+            )
+            .padding(start = 16.dp, bottom = 16.dp),
+    ) {
+        val isJamActive = togetherSessionState is TogetherSessionState.HostingOnline ||
+            togetherSessionState is TogetherSessionState.Joined ||
+            togetherSessionState is TogetherSessionState.Reconnecting ||
+            togetherSessionState is TogetherSessionState.JoiningOnline
+
+        val jamLabel = when (val state = togetherSessionState) {
+            is TogetherSessionState.HostingOnline -> {
+                val count = state.roomState?.participants?.size ?: 1
+                "Jam • $count"
+            }
+            is TogetherSessionState.Joined -> {
+                val count = state.roomState.participants.size
+                "Jam • $count"
+            }
+            is TogetherSessionState.Reconnecting -> "Jam • Reconnecting"
+            is TogetherSessionState.JoiningOnline -> "Jam • Joining"
+            else -> "Jam"
+        }
+
+        ExtendedFloatingActionButton(
+            onClick = {
+                navController.navigate("settings/music_together")
+            },
+            icon = {
+                Icon(
+                    painter = painterResource(if (isJamActive) R.drawable.fire else R.drawable.multi_user),
+                    contentDescription = "Cynk Together Jam",
+                    modifier = Modifier.size(20.dp),
+                )
+            },
+            text = {
+                Text(
+                    text = jamLabel,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            },
+            containerColor = if (isJamActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (isJamActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(20.dp),
+            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
+        )
     }
 }

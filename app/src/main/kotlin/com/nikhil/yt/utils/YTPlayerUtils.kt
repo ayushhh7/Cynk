@@ -193,8 +193,6 @@ object YTPlayerUtils {
         avoidCodecs: Set<String>,
     ): PlaybackData {
         Timber.tag(logTag).i("Fetching player response for videoId: $videoId, playlistId: $playlistId")
-        val signatureTimestamp = getSignatureTimestampOrNull(videoId)
-        Timber.tag(logTag).v("Signature timestamp: $signatureTimestamp")
 
         val isLoggedIn = YouTube.cookie != null
         val sessionId = if (isLoggedIn) YouTube.dataSyncId else YouTube.visitorData
@@ -258,7 +256,12 @@ object YTPlayerUtils {
             }
 
             Timber.tag(logTag).i("Fetching player response for client: ${client.clientName}")
-            streamPlayerResponse = YouTube.player(videoId, playlistId, client, signatureTimestamp).getOrNull()
+            val effectiveSignatureTimestamp = if (client.useSignatureTimestamp) {
+                getSignatureTimestampCached(videoId)
+            } else {
+                null
+            }
+            streamPlayerResponse = YouTube.player(videoId, playlistId, client, effectiveSignatureTimestamp).getOrNull()
 
             if (streamPlayerResponse == null) continue
 
@@ -509,6 +512,24 @@ object YTPlayerUtils {
         val approx = format.approxDurationMs?.toLongOrNull() ?: return false
         if (expectedDurationMs < 90_000L) return false
         return approx in 1L..(minOf(90_000L, (expectedDurationMs * 9L) / 10L))
+    }
+
+    @Volatile
+    private var cachedSignatureTimestamp: Pair<Int, Long>? = null
+
+    private fun getSignatureTimestampCached(videoId: String): Int? {
+        val now = System.currentTimeMillis()
+        cachedSignatureTimestamp?.let { (ts, expiry) ->
+            if (now < expiry) {
+                Timber.tag(logTag).v("Using cached signature timestamp: $ts")
+                return ts
+            }
+        }
+        val fetched = getSignatureTimestampOrNull(videoId)
+        if (fetched != null) {
+            cachedSignatureTimestamp = Pair(fetched, now + 12 * 3600 * 1000L)
+        }
+        return fetched
     }
 
     /**

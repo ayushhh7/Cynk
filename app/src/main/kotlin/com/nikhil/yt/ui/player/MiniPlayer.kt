@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -312,7 +312,7 @@ private fun LegacyMiniPlayer(
             IconButton(
                 onClick = {
                     if (playbackState == Player.STATE_ENDED) {
-                        playerConnection.player.seekTo(0, 0)
+                        playerConnection.seekTo(0, 0L)
                         playerConnection.player.playWhenReady = true
                     } else {
                         playerConnection.player.togglePlayPause()

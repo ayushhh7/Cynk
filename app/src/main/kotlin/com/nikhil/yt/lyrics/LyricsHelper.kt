@@ -25,8 +25,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
@@ -73,38 +78,111 @@ constructor(
 
         val ordered = orderedProviders()
         val providers = if (preferredProviderOnly) listOf(ordered.first()) else ordered
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val deferred = scope.async {
-            for (provider in providers) {
-                val enabled = provider.isEnabled(context)
-                
-                if (enabled) {
-                    try {
-                        val result = provider.getLyrics(
-                            mediaMetadata.id,
-                            mediaMetadata.title,
-                            mediaMetadata.artists.joinToString { it.name },
-                            mediaMetadata.album?.title,
-                            mediaMetadata.duration,
-                        )
-                        result.onSuccess { lyrics ->
-                            if (isMeaningfulLyrics(lyrics)) {
-                                cache.put(mediaMetadata.id, listOf(LyricsResult(provider.name, lyrics)))
-                                return@async lyrics
-                            }
-                        }.onFailure {
-                            reportException(it)
-                        }
-                    } catch (e: Exception) {
-                        reportException(e)
+        val enabledProviders = providers.filter { it.isEnabled(context) }
+        if (enabledProviders.isEmpty()) return LYRICS_NOT_FOUND
+
+        val artistsString = mediaMetadata.artists.joinToString { it.name }
+        val albumTitle = mediaMetadata.album?.title
+        val duration = mediaMetadata.duration
+
+        suspend fun queryProvider(provider: LyricsProvider): String? {
+            return try {
+                val result = provider.getLyrics(
+                    mediaMetadata.id,
+                    mediaMetadata.title,
+                    artistsString,
+                    albumTitle,
+                    duration,
+                )
+                val lyrics = result.getOrNull()
+                if (lyrics != null && isMeaningfulLyrics(lyrics)) lyrics else null
+            } catch (e: Exception) {
+                reportException(e)
+                null
+            }
+        }
+
+        if (enabledProviders.size == 1) {
+            val provider = enabledProviders[0]
+            val lyrics = queryProvider(provider)
+            if (lyrics != null) {
+                cache.put(mediaMetadata.id, listOf(LyricsResult(provider.name, lyrics)))
+                return lyrics
+            }
+            return LYRICS_NOT_FOUND
+        }
+
+        val preferred = enabledProviders[0]
+        val fallbacks = enabledProviders.drop(1)
+
+        val lyrics = coroutineScope {
+            val preferredDeferred = async(Dispatchers.IO) { queryProvider(preferred) }
+            val fallbackDeferreds = fallbacks.take(2).map { provider ->
+                provider to async(Dispatchers.IO) { queryProvider(provider) }
+            }
+
+            // Give the preferred provider a prioritized 850ms window
+            val prefResult = withTimeoutOrNull(850L) {
+                preferredDeferred.await()
+            }
+
+            if (prefResult != null) {
+                fallbackDeferreds.forEach { it.second.cancel() }
+                cache.put(mediaMetadata.id, listOf(LyricsResult(preferred.name, prefResult)))
+                return@coroutineScope prefResult
+            }
+
+            // Preferred was slow, timed out, or returned null/failed.
+            // Check if any concurrently running fallback has already completed!
+            for ((provider, deferred) in fallbackDeferreds) {
+                if (deferred.isCompleted) {
+                    val fbResult = deferred.await()
+                    if (fbResult != null) {
+                        preferredDeferred.cancel()
+                        cache.put(mediaMetadata.id, listOf(LyricsResult(provider.name, fbResult)))
+                        return@coroutineScope fbResult
                     }
                 }
             }
-            return@async LYRICS_NOT_FOUND
+
+            // Race whichever of preferred and fallbacks finishes first with valid lyrics
+            val allActive = listOf(preferred to preferredDeferred) + fallbackDeferreds
+            val resultChannel = Channel<Pair<String, String>>(allActive.size)
+
+            allActive.forEach { (prov, def) ->
+                launch(Dispatchers.IO) {
+                    val res = try { def.await() } catch (_: Exception) { null }
+                    if (res != null) {
+                        resultChannel.trySend(prov.name to res)
+                    }
+                }
+            }
+
+            var foundResult: Pair<String, String>? = null
+            try {
+                withTimeout(3000L) {
+                    foundResult = resultChannel.receiveCatching().getOrNull()
+                }
+            } catch (_: Exception) {}
+
+            if (foundResult != null) {
+                cache.put(mediaMetadata.id, listOf(LyricsResult(foundResult!!.first, foundResult!!.second)))
+                return@coroutineScope foundResult!!.second
+            }
+
+            // If top providers all failed, sequentially try remaining providers as last resort
+            val remaining = fallbacks.drop(2)
+            for (prov in remaining) {
+                val remResult = queryProvider(prov)
+                if (remResult != null) {
+                    cache.put(mediaMetadata.id, listOf(LyricsResult(prov.name, remResult)))
+                    return@coroutineScope remResult
+                }
+            }
+
+            LYRICS_NOT_FOUND
         }
 
-        val lyrics = deferred.await()
-        scope.cancel()
         return lyrics
     }
 

@@ -15,16 +15,23 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("keystore.properties").takeIf { it.exists() }
+    ?: file("keystore.properties").takeIf { it.exists() }
+if (keystorePropertiesFile != null) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
 android {
     namespace = "com.nikhil.yt"
     compileSdk = 36
 
     defaultConfig {
-    applicationId = "com.nikhil.yt"
+        applicationId = "app.cynk.music"
         minSdk = 26
         targetSdk = 36
         versionCode = 10
-        versionName = "1.1.2 "
+        versionName = "1.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -80,12 +87,26 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystoreFile = file("keystore/release.keystore")
-            if(keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = System.getenv("STORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+            val storeFilePath = keystoreProperties.getProperty("storeFile")
+                ?: System.getenv("STORE_FILE")
+                ?: "keystore/cynk-release.jks"
+            val resolvedStoreFile = rootProject.file(storeFilePath).takeIf { it.exists() }
+                ?: file(storeFilePath).takeIf { it.exists() }
+
+            val sPassword = keystoreProperties.getProperty("storePassword")
+                ?: System.getenv("STORE_PASSWORD")
+            val kAlias = keystoreProperties.getProperty("keyAlias")
+                ?: System.getenv("KEY_ALIAS")
+            val kPassword = keystoreProperties.getProperty("keyPassword")
+                ?: System.getenv("KEY_PASSWORD")
+
+            if (resolvedStoreFile != null && resolvedStoreFile.exists() &&
+                !sPassword.isNullOrBlank() && !kAlias.isNullOrBlank() && !kPassword.isNullOrBlank()
+            ) {
+                storeFile = resolvedStoreFile
+                storePassword = sPassword
+                keyAlias = kAlias
+                keyPassword = kPassword
             }
         }
     }
@@ -98,7 +119,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            val releaseSigning = signingConfigs.getByName("release")
+            if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
+                signingConfig = releaseSigning
+            } else {
+                throw GradleException(
+                    "Release signing credentials are missing! A permanent release keystore must be configured via keystore.properties or environment variables (STORE_FILE, STORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD). Never sign release builds with the debug keystore."
+                )
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

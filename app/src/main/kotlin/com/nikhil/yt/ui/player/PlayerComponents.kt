@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -753,7 +753,7 @@ fun PlayerPlaybackControls(
                     FilledIconButton(
                         onClick = {
                             if (playbackState == STATE_ENDED) {
-                                playerConnection.player.seekTo(0, 0)
+                                playerConnection.seekTo(0, 0L)
                                 playerConnection.player.playWhenReady = true
                             } else {
                                 playerConnection.player.togglePlayPause()
@@ -872,7 +872,7 @@ fun PlayerPlaybackControls(
                             .background(textBackgroundColor)
                             .clickable {
                                 if (playbackState == STATE_ENDED) {
-                                    playerConnection.player.seekTo(0, 0)
+                                    playerConnection.seekTo(0, 0L)
                                     playerConnection.player.playWhenReady = true
                                 } else {
                                     playerConnection.player.togglePlayPause()
@@ -1049,7 +1049,7 @@ fun PlayerPlaybackControls(
                     Surface(
                         onClick = {
                             if (playbackState == STATE_ENDED) {
-                                playerConnection.player.seekTo(0, 0)
+                                playerConnection.seekTo(0, 0L)
                                 playerConnection.player.playWhenReady = true
                             } else {
                                 playerConnection.player.togglePlayPause()
@@ -1220,7 +1220,7 @@ fun PlayerPlaybackControls(
                         .background(textButtonColor)
                         .clickable {
                             if (playbackState == STATE_ENDED) {
-                                playerConnection.player.seekTo(0, 0)
+                                playerConnection.seekTo(0, 0L)
                                 playerConnection.player.playWhenReady = true
                             } else {
                                 playerConnection.player.togglePlayPause()

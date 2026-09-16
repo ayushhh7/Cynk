@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -539,7 +539,7 @@ fun BottomSheetPlayer(
         val onSliderValueChange: (Long) -> Unit = { sliderPosition = it }
         val onSliderValueChangeFinished: () -> Unit = {
             sliderPosition?.let {
-                playerConnection.player.seekTo(it)
+                playerConnection.seekTo(it)
                 position = it
             }
             sliderPosition = null
@@ -962,7 +962,7 @@ private fun MetroPlayerContent(
                     1f
                 ),
                 valueRange = 0f..1f,
-                onValueChange = { fraction -> playerConnection.player.seekTo((durationMs * fraction).toLong()) },
+                onValueChange = { fraction -> playerConnection.seekTo((durationMs * fraction).toLong()) },
                 onValueChangeFinished = {},
                 activeColor = textColor,
                 isPlaying = isPlaying,
@@ -1028,9 +1028,9 @@ private fun MetroPlayerContent(
                 Surface(
                     onClick = {
                         if (playbackState == androidx.media3.common.Player.STATE_ENDED) {
-                            playerConnection.player.seekTo(
+                            playerConnection.seekTo(
                                 0,
-                                0
+                                0L
                             ); playerConnection.player.playWhenReady = true
                         } else playerConnection.player.togglePlayPause()
                     },

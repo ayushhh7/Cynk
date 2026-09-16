@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -163,10 +163,7 @@ fun LyricsScreen(
     // Auto-fetch lyrics when no lyrics found (same logic as refetch)
     LaunchedEffect(mediaMetadata.id, currentLyrics) {
         if (currentLyrics == null) {
-            // Small delay to ensure database state is stable
-            delay(500)
-            
-            coroutineScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 try {
                     // Get LyricsHelper from Hilt
                     val entryPoint = EntryPointAccessors.fromApplication(
@@ -446,7 +443,7 @@ fun LyricsScreen(
                                 },
                                 onValueChangeFinished = {
                                     sliderPosition?.let {
-                                        player.seekTo(it)
+                                        playerConnection.seekTo(it)
                                         position = it
                                     }
                                     sliderPosition = null
@@ -732,7 +729,7 @@ fun LyricsScreen(
                             },
                             onValueChangeFinished = {
                                 sliderPosition?.let {
-                                    player.seekTo(it)
+                                    playerConnection.seekTo(it)
                                     position = it
                                 }
                                 sliderPosition = null

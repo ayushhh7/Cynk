@@ -37,6 +37,9 @@ captures/
 # --- CRITICAL SECURITY ---
 *.jks
 *.keystore
+keystore/
+keystore.properties
 *.properties
 !gradle.properties
 !gradle/wrapper/gradle-wrapper.properties
+
