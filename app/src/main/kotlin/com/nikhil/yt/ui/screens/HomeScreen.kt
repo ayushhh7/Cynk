@@ -56,6 +56,7 @@ import com.nikhil.yt.R
 import com.nikhil.yt.constants.InnerTubeCookieKey
 import com.nikhil.yt.constants.DisableBlurKey
 import com.nikhil.yt.constants.ShowHomeCategoryChipsKey
+import com.nikhil.yt.ui.component.CynkFlashMessageBanner
 import com.nikhil.yt.db.entities.Album
 import com.nikhil.yt.db.entities.Artist
 import com.nikhil.yt.db.entities.Playlist
@@ -69,6 +70,7 @@ import com.nikhil.yt.ui.component.LocalBottomSheetPageState
 import com.nikhil.yt.ui.component.LocalMenuState
 import com.nikhil.yt.ui.component.NavigationTitle
 import com.nikhil.yt.utils.rememberPreference
+import com.nikhil.yt.utils.CynkContentFilter
 import com.nikhil.yt.viewmodels.HomeViewModel
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
@@ -379,12 +381,12 @@ fun HomeScreen(
             }
 
             val dedupedTrendingSongs = remember(trendingSongs, quickPickSongIds) {
-                trendingSongs?.filterNot { it.id in quickPickSongIds }
+                trendingSongs?.filterNot { it.id in quickPickSongIds }?.take(24)
             }
 
             val dedupedReelsSongs = remember(reelsSongs, quickPickSongIds, dedupedTrendingSongs) {
                 val trendingIds = dedupedTrendingSongs.orEmpty().map { it.id }.toSet()
-                reelsSongs?.filterNot { it.id in quickPickSongIds || it.id in trendingIds }
+                reelsSongs?.filterNot { it.id in quickPickSongIds || it.id in trendingIds }?.take(20)
             }
 
             LazyColumn(
@@ -405,6 +407,11 @@ fun HomeScreen(
                             },
                         )
                     }
+                }
+
+                // Flash Message Banner (cooldown-managed, dismissible)
+                item(key = "cynk_flash_banner", contentType = "flash_banner") {
+                    CynkFlashMessageBanner()
                 }
 
                 // 2. Quick Picks (SONG section, exactly once)

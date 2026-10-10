@@ -138,6 +138,8 @@ class TogetherClient(
     private var loopJob: Job? = null
     private var reconnectJob: Job? = null
     private var isExplicitDisconnect = false
+    val currentSelfParticipantId: String?
+        get() = selfParticipantId
     private var selfParticipantId: String? = null
     private val clientId = clientId.trim().ifBlank { UUID.randomUUID().toString() }.take(64)
     private val normalizedBearerToken: String? = bearerToken?.trim()?.takeIf { it.isNotBlank() }
@@ -219,6 +221,8 @@ class TogetherClient(
             val urls = listOfNotNull(wsUrl.trim(), alternateWebSocketSchemeOrNull(wsUrl.trim())).distinct()
             val token = normalizedBearerToken
 
+            android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER JOIN_SENT roomId=$sessionId clientId=$clientId displayName=${displayName.trim()}")
+
             var lastError: Throwable? = null
             for (candidate in urls) {
                 try {
@@ -229,6 +233,7 @@ class TogetherClient(
                         },
                     ) {
                         session = this
+                        android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER SOCKET_CONNECTED role=GUEST roomId=$sessionId clientId=$clientId url=$candidate")
                         val hello =
                             ClientHello(
                                 protocolVersion = TogetherProtocolVersion,
@@ -307,6 +312,12 @@ class TogetherClient(
 
     fun requestControl(sessionId: String, action: ControlAction) {
         val pid = selfParticipantId ?: return
+        val trackId = when (action) {
+            is ControlAction.SeekToTrack -> action.trackId
+            is ControlAction.PlayTrackNow -> action.track.id
+            else -> "none"
+        }
+        android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER CONTROL_SENT roomId=$sessionId pid=$pid action=${action::class.java.simpleName} trackId=$trackId")
         scope.launch {
             session?.send(
                 TogetherJson.json.encodeToString(
@@ -319,6 +330,7 @@ class TogetherClient(
 
     fun requestAddTrack(sessionId: String, track: TogetherTrack, mode: AddTrackMode) {
         val pid = selfParticipantId ?: return
+        android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER CONTROL_SENT roomId=$sessionId pid=$pid action=AddTrack trackId=${track.id} mode=$mode")
         scope.launch {
             session?.send(
                 TogetherJson.json.encodeToString(
@@ -372,30 +384,39 @@ class TogetherClient(
                             is ServerWelcome -> {
                                 if (message.sessionId == sessionId) {
                                     selfParticipantId = message.participantId
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER JOIN_RECEIVED roomId=$sessionId participantId=${message.participantId} isPending=${message.isPending}")
                                     dispatchEvent(TogetherClientEvent.Welcome(message))
                                 }
                             }
 
                             is RoomStateMessage -> {
                                 if (message.state.sessionId == sessionId) {
+                                    val currTrackId = message.state.queue.getOrNull(message.state.currentIndex)?.id ?: "none"
+                                    android.util.Log.i(
+                                        "CYNK_TOGETHER",
+                                        "CYNK_TOGETHER ROOM_STATE_RECEIVED roomId=$sessionId hostId=${message.state.hostId} selfPid=$selfParticipantId seq=${message.state.sequenceNumber} trackId=$currTrackId isPlaying=${message.state.isPlaying} pos=${message.state.positionMs} count=${message.state.participants.size} participants=${message.state.participants.map { "${it.id}:${it.name}:${if (it.isHost) "HOST" else "GUEST"}" }}",
+                                    )
                                     dispatchEvent(TogetherClientEvent.RoomState(message.state))
                                 }
                             }
 
                             is com.nikhil.yt.together.JoinDecision -> {
                                 if (message.sessionId == sessionId && message.participantId == selfParticipantId) {
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER JOIN_DECISION roomId=$sessionId approved=${message.approved}")
                                     dispatchEvent(TogetherClientEvent.JoinDecision(message))
                                 }
                             }
 
                             is ParticipantJoined -> {
                                 if (message.sessionId == sessionId) {
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER PARTICIPANT_JOINED roomId=$sessionId participantId=${message.participant.id} name=${message.participant.name}")
                                     dispatchEvent(TogetherClientEvent.ParticipantJoined(message.participant))
                                 }
                             }
 
                             is ParticipantLeft -> {
                                 if (message.sessionId == sessionId) {
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER PARTICIPANT_LEFT roomId=$sessionId participantId=${message.participantId} reason=${message.reason}")
                                     dispatchEvent(TogetherClientEvent.ParticipantLeft(message.participantId, message.reason))
                                 }
                             }
@@ -423,7 +444,7 @@ class TogetherClient(
                                     dispatchEvent(
                                         TogetherClientEvent.HeartbeatPong(
                                             pong = message,
-                                            receivedAtElapsedRealtimeMs = System.currentTimeMillis(),
+                                            receivedAtElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
                                         ),
                                     )
                                 }
@@ -433,6 +454,7 @@ class TogetherClient(
                                 if (message.code == "SESSION_NOT_FOUND" || message.code == "BANNED") {
                                     isExplicitDisconnect = true
                                 }
+                                android.util.Log.w("CYNK_TOGETHER", "CYNK_TOGETHER SERVER_ERROR roomId=$sessionId message=${message.message} code=${message.code}")
                                 dispatchEvent(TogetherClientEvent.ServerIssue(message = message.message, code = message.code))
                             }
 
@@ -444,6 +466,7 @@ class TogetherClient(
                 } catch (t: Throwable) {
                     shouldTryReconnect = !isExplicitDisconnect
                 } finally {
+                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER SOCKET_DISCONNECTED role=GUEST roomId=$sessionId reconnecting=$shouldTryReconnect")
                     if (shouldTryReconnect && !isExplicitDisconnect) {
                         scheduleReconnect()
                     } else {

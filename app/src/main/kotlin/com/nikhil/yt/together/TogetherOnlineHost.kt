@@ -85,7 +85,7 @@ class TogetherOnlineHost(
         var pending: Boolean,
     )
 
-    private val guests = LinkedHashMap<String, Guest>()
+    private val guests = java.util.Collections.synchronizedMap(LinkedHashMap<String, Guest>())
 
     @Volatile
     private var lastParticipants: List<TogetherParticipant> = emptyList()
@@ -123,6 +123,7 @@ class TogetherOnlineHost(
                     },
                 ) {
                     session = this
+                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER SOCKET_CONNECTED role=HOST roomId=$sessionId clientId=$clientId url=$candidate")
                     val hello =
                         ClientHello(
                             protocolVersion = TogetherProtocolVersion,
@@ -143,7 +144,9 @@ class TogetherOnlineHost(
         }
 
         if (!isExplicitDisconnect) {
+            android.util.Log.w("CYNK_TOGETHER", "CYNK_TOGETHER SOCKET_CONNECT_FAILED role=HOST roomId=$sessionId reason=${lastError?.message}")
             onEvent?.invoke(TogetherServerEvent.Error(connectionFailureMessage(lastError), lastError))
+            scheduleHostReconnect()
         }
     }
 
@@ -211,6 +214,8 @@ class TogetherOnlineHost(
         guests.clear()
         lastParticipants = emptyList()
     }
+
+    fun isConnected(): Boolean = session != null
 
     fun currentParticipants(): List<TogetherParticipant> = lastParticipants
 
@@ -284,6 +289,12 @@ class TogetherOnlineHost(
                 participants = lastParticipants,
             )
 
+        val trackId = roomState.queue.getOrNull(roomState.currentIndex)?.id ?: "none"
+        android.util.Log.i(
+            "CYNK_TOGETHER",
+            "CYNK_TOGETHER ROOM_STATE_SENT roomId=$sessionId hostId=$hostId seq=${roomState.sequenceNumber} trackId=$trackId isPlaying=${roomState.isPlaying} pos=${roomState.positionMs} count=${lastParticipants.size} participants=${lastParticipants.map { "${it.id}:${it.name}:${if (it.isHost) "HOST" else "GUEST"}" }}",
+        )
+
         runCatching {
             session?.send(
                 TogetherJson.json.encodeToString(
@@ -305,7 +316,9 @@ class TogetherOnlineHost(
             )
 
         val guestList =
-            guests.values
+            synchronized(guests) {
+                guests.values.toList()
+            }
                 .sortedBy { it.name.lowercase() }
                 .map {
                     TogetherParticipant(
@@ -352,6 +365,7 @@ class TogetherOnlineHost(
                                 if (message.sessionId == sessionId) {
                                     hostParticipantId = message.participantId
                                     mutex.withLock { settings = message.settings }
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER HOST_REGISTERED roomId=$sessionId participantId=${message.participantId}")
                                     onEvent?.invoke(TogetherServerEvent.ServerWelcomeReceived(message))
                                 }
                             }
@@ -367,6 +381,7 @@ class TogetherOnlineHost(
                                             pending = true,
                                         )
                                     rebuildParticipantsSnapshot()
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER GUEST_REGISTERED roomId=$sessionId participantId=${participant.id} name=${participant.name} isPending=true")
                                     onEvent?.invoke(TogetherServerEvent.JoinRequested(participant))
                                 }
                             }
@@ -382,6 +397,7 @@ class TogetherOnlineHost(
                                             pending = false,
                                         )
                                     rebuildParticipantsSnapshot()
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER GUEST_REGISTERED roomId=$sessionId participantId=${participant.id} name=${participant.name} isPending=false")
                                     onEvent?.invoke(TogetherServerEvent.ParticipantJoined(participant))
                                 }
                             }
@@ -390,19 +406,37 @@ class TogetherOnlineHost(
                                 if (message.sessionId == sessionId) {
                                     guests.remove(message.participantId)
                                     rebuildParticipantsSnapshot()
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER PARTICIPANT_LEFT roomId=$sessionId participantId=${message.participantId} reason=${message.reason}")
                                     onEvent?.invoke(TogetherServerEvent.ParticipantLeft(message.participantId, message.reason))
                                 }
                             }
 
                             is ControlRequest -> {
-                                if (message.sessionId == sessionId) onEvent?.invoke(TogetherServerEvent.ControlRequested(message))
+                                if (message.sessionId == sessionId) {
+                                    val actTrackId = when (val act = message.action) {
+                                        is ControlAction.SeekToTrack -> act.trackId
+                                        is ControlAction.PlayTrackNow -> act.track.id
+                                        else -> "none"
+                                    }
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER CONTROL_RECEIVED roomId=$sessionId fromParticipantId=${message.participantId} action=${message.action::class.java.simpleName} trackId=$actTrackId")
+                                    onEvent?.invoke(TogetherServerEvent.ControlRequested(message))
+                                }
                             }
 
                             is AddTrackRequest -> {
-                                if (message.sessionId == sessionId) onEvent?.invoke(TogetherServerEvent.AddTrackRequested(message))
+                                if (message.sessionId == sessionId) {
+                                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER CONTROL_RECEIVED roomId=$sessionId fromParticipantId=${message.participantId} action=AddTrack trackId=${message.track.id} mode=${message.mode}")
+                                    onEvent?.invoke(TogetherServerEvent.AddTrackRequested(message))
+                                }
+                            }
+
+                            is HeartbeatPong -> {
+                                val receivedAt = android.os.SystemClock.elapsedRealtime()
+                                onEvent?.invoke(TogetherServerEvent.HeartbeatPongReceived(message, receivedAt))
                             }
 
                             is ServerError -> {
+                                android.util.Log.w("CYNK_TOGETHER", "CYNK_TOGETHER SERVER_ERROR roomId=$sessionId message=${message.message} code=${message.code}")
                                 onEvent?.invoke(TogetherServerEvent.Error(message.message, null))
                             }
 
@@ -414,6 +448,7 @@ class TogetherOnlineHost(
                 } catch (t: Throwable) {
                     shouldTryReconnect = !isExplicitDisconnect
                 } finally {
+                    android.util.Log.i("CYNK_TOGETHER", "CYNK_TOGETHER SOCKET_DISCONNECTED role=HOST roomId=$sessionId reconnecting=$shouldTryReconnect")
                     if (shouldTryReconnect && !isExplicitDisconnect) {
                         scheduleHostReconnect()
                     } else {

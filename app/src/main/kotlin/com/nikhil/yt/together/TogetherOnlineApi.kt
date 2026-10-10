@@ -46,7 +46,7 @@ data class TogetherOnlineResolveResponse(
     val sessionId: String,
     val guestKey: String,
     val wsUrl: String,
-    val settings: TogetherRoomSettings,
+    val settings: TogetherRoomSettings = TogetherRoomSettings(),
 )
 
 class TogetherOnlineApiException(

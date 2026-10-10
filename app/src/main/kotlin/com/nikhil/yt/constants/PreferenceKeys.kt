@@ -203,7 +203,7 @@ val PlaylistSortDescendingKey = booleanPreferencesKey("playlistSortDescending")
 val ArtistSongSortTypeKey = stringPreferencesKey("artistSongSortType")
 val ArtistSongSortDescendingKey = booleanPreferencesKey("artistSongSortDescending")
 val MixSortTypeKey = stringPreferencesKey("mixSortType")
-val MixSortDescendingKey = booleanPreferencesKey("albumSortDescending")
+val MixSortDescendingKey = booleanPreferencesKey("mixSortDescending")
 
 val SongFilterKey = stringPreferencesKey("songFilter")
 val ArtistFilterKey = stringPreferencesKey("artistFilter")
@@ -574,6 +574,9 @@ val GitHubReleasesFingerprintKey = stringPreferencesKey("github_releases_fingerp
 
 val TogetherOnlineEndpointCacheKey = stringPreferencesKey("together_online_endpoint_cache")
 val TogetherOnlineEndpointLastCheckedAtKey = longPreferencesKey("together_online_endpoint_last_checked_at")
+
+val LastFlashMessageDismissedTimeKey = longPreferencesKey("last_flash_message_dismissed_time")
+val LastFlashMessageIndexKey = intPreferencesKey("last_flash_message_index")
 
 enum class UpdateChannel {
     STABLE,

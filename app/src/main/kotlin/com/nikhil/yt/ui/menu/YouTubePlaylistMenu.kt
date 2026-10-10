@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -120,14 +120,19 @@ fun YouTubePlaylistMenu(
     AddToPlaylistDialog(
         isVisible = showChoosePlaylistDialog,
         onGetSong = { targetPlaylist ->
-            val allSongs = songs
-                .ifEmpty {
-                    YouTube.playlist(playlist.id).completed().getOrNull()?.songs.orEmpty()
-                }.map {
-                    it.toMediaMetadata()
+            val expectedSongCount = playlist.songCountText?.let { text ->
+                Regex("""[\d,]+""").find(text)?.value?.replace(",", "")?.toIntOrNull()
+            }
+            val fetchedSongs = if (songs.isNotEmpty() && expectedSongCount != null && songs.size >= expectedSongCount) {
+                songs
+            } else {
+                YouTube.playlist(playlist.id).completed().getOrNull()?.songs.orEmpty().ifEmpty { songs }
+            }
+            val allSongs = fetchedSongs.map { it.toMediaMetadata() }
+            allSongs.chunked(100).forEach { chunk ->
+                database.transaction {
+                    chunk.forEach(::insert)
                 }
-            database.transaction {
-                allSongs.forEach(::insert)
             }
             allSongs.map { it.id }
         },
@@ -165,19 +170,32 @@ fun YouTubePlaylistMenu(
                                 ).toggleLike()
                                 insert(playlistEntity)
                                 coroutineScope.launch(Dispatchers.IO) {
-                                    songs.ifEmpty {
-                                        YouTube.playlist(playlist.id).completed()
-                                            .getOrNull()?.songs.orEmpty()
-                                    }.map { it.toMediaMetadata() }
-                                        .onEach(::insert)
-                                        .mapIndexed { index, song ->
-                                            PlaylistSongMap(
-                                                songId = song.id,
-                                                playlistId = playlistEntity.id,
-                                                position = index
+                                    val expectedSongCount = playlist.songCountText?.let { text ->
+                                        Regex("""[\d,]+""").find(text)?.value?.replace(",", "")?.toIntOrNull()
+                                    }
+                                    val fetchedSongs = if (songs.isNotEmpty() && expectedSongCount != null && songs.size >= expectedSongCount) {
+                                        songs
+                                    } else {
+                                        YouTube.playlist(playlist.id).completed().getOrNull()?.songs.orEmpty().ifEmpty { songs }
+                                    }
+                                    val allSongs = fetchedSongs.map { it.toMediaMetadata() }
+                                    allSongs.chunked(100).forEach { chunk ->
+                                        database.transaction {
+                                            chunk.forEach(::insert)
+                                        }
+                                    }
+                                    database.transaction {
+                                        allSongs.forEachIndexed { index, song ->
+                                            insert(
+                                                PlaylistSongMap(
+                                                    songId = song.id,
+                                                    playlistId = playlistEntity.id,
+                                                    position = index,
+                                                    setVideoId = song.setVideoId
+                                                )
                                             )
                                         }
-                                        .forEach(::insert)
+                                    }
                                 }
                             }
                         } else {
@@ -267,14 +285,19 @@ fun YouTubePlaylistMenu(
     ImportPlaylistDialog(
         isVisible = showImportPlaylistDialog,
         onGetSong = {
-            val allSongs = songs
-                .ifEmpty {
-                    YouTube.playlist(playlist.id).completed().getOrNull()?.songs.orEmpty()
-                }.map {
-                    it.toMediaMetadata()
+            val expectedSongCount = playlist.songCountText?.let { text ->
+                Regex("""[\d,]+""").find(text)?.value?.replace(",", "")?.toIntOrNull()
+            }
+            val fetchedSongs = if (songs.isNotEmpty() && expectedSongCount != null && songs.size >= expectedSongCount) {
+                songs
+            } else {
+                YouTube.playlist(playlist.id).completed().getOrNull()?.songs.orEmpty().ifEmpty { songs }
+            }
+            val allSongs = fetchedSongs.map { it.toMediaMetadata() }
+            allSongs.chunked(100).forEach { chunk ->
+                database.transaction {
+                    chunk.forEach(::insert)
                 }
-            database.transaction {
-                allSongs.forEach(::insert)
             }
             allSongs.map { it.id }
         },

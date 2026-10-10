@@ -540,9 +540,16 @@ object YouTube {
                     PlaylistPage.fromMusicResponsiveListItemRenderer(it)
                 } ?: emptyList(),
             songsContinuation = response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer
-                ?.contents?.firstOrNull()?.musicPlaylistShelfRenderer?.contents?.getContinuation(),
+                ?.contents?.firstOrNull()?.musicPlaylistShelfRenderer?.let { shelf ->
+                    shelf.contents.getContinuation() ?: shelf.continuations?.getContinuation()
+                } ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer
+                    ?.continuations?.getContinuation(),
             continuation = response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer
                 ?.continuations?.getContinuation()
+                ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer
+                    ?.contents?.firstOrNull()?.musicPlaylistShelfRenderer?.let { shelf ->
+                        shelf.continuations?.getContinuation() ?: shelf.contents.getContinuation()
+                    }
         )
     }
 
@@ -555,45 +562,37 @@ object YouTube {
             setLogin = true
         ).body<BrowseResponse>()
 
-        val mainContents: List<MusicShelfRenderer.Content> = buildList {
-            response.continuationContents?.sectionListContinuation?.contents
-                .orEmpty()
-                .forEach { sectionContent ->
-                    addAll(sectionContent.musicPlaylistShelfRenderer?.contents.orEmpty())
-                }
+        val allContents: List<MusicShelfRenderer.Content> = buildList {
+            // 1. Direct musicPlaylistShelfContinuation (standard YouTube Music continuation)
+            response.continuationContents?.musicPlaylistShelfContinuation?.contents?.let {
+                addAll(it)
+            }
+            // 2. Direct musicShelfContinuation
+            response.continuationContents?.musicShelfContinuation?.contents?.let {
+                addAll(it)
+            }
+            // 3. SectionListContinuation (nested shelf contents)
+            response.continuationContents?.sectionListContinuation?.contents?.forEach { sectionContent ->
+                sectionContent.musicPlaylistShelfRenderer?.contents?.let { addAll(it) }
+                sectionContent.musicShelfRenderer?.contents?.let { addAll(it) }
+            }
+            // 4. onResponseReceivedActions (actions-based continuation)
+            response.onResponseReceivedActions?.forEach { action ->
+                action.appendContinuationItemsAction?.continuationItems?.let { addAll(it) }
+            }
         }
-
-        val appendedContents = response.onResponseReceivedActions
-            ?.firstOrNull()
-            ?.appendContinuationItemsAction
-            ?.continuationItems
-            .orEmpty()
-
-        val allContents = mainContents + appendedContents
 
         val songs = allContents
             .mapNotNull(MusicShelfRenderer.Content::musicResponsiveListItemRenderer)
             .mapNotNull(PlaylistPage::fromMusicResponsiveListItemRenderer)
 
-        val nextContinuation = if (songs.isEmpty()) null else {
-            response.continuationContents
-                ?.sectionListContinuation
-                ?.continuations
-                ?.getContinuation()
-                ?: response.continuationContents
-                    ?.musicPlaylistShelfContinuation
-                    ?.continuations
-                    ?.getContinuation()
-                ?: response.continuationContents
-                    ?.musicShelfContinuation
-                    ?.continuations
-                    ?.getContinuation()
-                ?: response.onResponseReceivedActions
-                    ?.firstOrNull()
-                    ?.appendContinuationItemsAction
-                    ?.continuationItems
-                    ?.getContinuation()
-        }
+        val nextContinuation = allContents.getContinuation()
+            ?: response.continuationContents?.musicPlaylistShelfContinuation?.continuations?.getContinuation()
+            ?: response.continuationContents?.musicShelfContinuation?.continuations?.getContinuation()
+            ?: response.continuationContents?.sectionListContinuation?.continuations?.getContinuation()
+            ?: response.onResponseReceivedActions?.firstNotNullOfOrNull { action ->
+                action.appendContinuationItemsAction?.continuationItems?.getContinuation()
+            }
 
         PlaylistContinuationPage(
             songs = songs,
@@ -613,14 +612,26 @@ object YouTube {
     @Volatile
     var lastChartsRawResponse: String? = null
 
-    suspend fun home(continuation: String? = null, params: String? = null): Result<HomePage> = runCatching {
+    suspend fun home(
+        continuation: String? = null,
+        params: String? = null,
+        customLocale: YouTubeLocale? = null
+    ): Result<HomePage> = runCatching {
         if (continuation != null) {
             return@runCatching homeContinuation(continuation).getOrThrow()
         }
 
-        val httpResponse = innerTube.browse(WEB_REMIX, browseId = "FEmusic_home", params = params, setLogin = true)
+        val httpResponse = innerTube.browse(
+            WEB_REMIX,
+            browseId = "FEmusic_home",
+            params = params,
+            setLogin = true,
+            customLocale = customLocale
+        )
         val rawJson = httpResponse.bodyAsText()
-        lastHomeRawResponse = rawJson
+        if (customLocale == null || customLocale.gl.equals("US", ignoreCase = true)) {
+            lastHomeRawResponse = rawJson
+        }
         val response = defaultJson.decodeFromString<BrowseResponse>(rawJson)
         parseBrowseResponse(response)
     }
@@ -883,11 +894,12 @@ object YouTube {
 
     suspend fun getChartsPage(continuation: String? = null, countryCode: String? = null): Result<ChartsPage> = runCatching {
         val customLocale = countryCode?.let { YouTubeLocale(gl = it, hl = "en") }
+        val chartParams = if (countryCode != null && countryCode.equals("IN", ignoreCase = true)) "ggMGCgQIgAQ%3D" else null
         val httpResponse = try {
             innerTube.browse(
                 client = WEB_REMIX,
                 browseId = "FEmusic_charts",
-                params = "ggMGCgQIgAQ%3D",
+                params = chartParams,
                 continuation = continuation,
                 customLocale = customLocale,
             )
@@ -927,54 +939,39 @@ object YouTube {
                 val carouselTitle = renderer.header?.musicCarouselShelfBasicHeaderRenderer?.title?.runs?.firstOrNull()?.text
                     ?: "Charts"
 
-                val directSongItems = mutableListOf<SongItem>()
-                val playlistSections = mutableListOf<ChartsPage.ChartSection>()
+                val directCarouselItems = mutableListOf<YTItem>()
 
                 renderer.contents.forEach { item ->
                     item.musicResponsiveListItemRenderer?.let { r ->
                         val chartItem = convertToChartItem(r)
                         if (chartItem is SongItem) {
-                            directSongItems.add(chartItem)
+                            directCarouselItems.add(chartItem)
                         }
                     }
                     item.musicTwoRowItemRenderer?.let { r ->
                         if (r.isSong) {
                             val song = convertMusicTwoRowItem(r)
                             if (song is SongItem) {
-                                directSongItems.add(song)
+                                directCarouselItems.add(song)
                             }
                         } else if (r.isPlaylist) {
-                            val playlistId = r.navigationEndpoint.browseEndpoint?.browseId?.removePrefix("VL")
-                                ?: r.thumbnailOverlay?.musicItemThumbnailOverlayRenderer?.content
-                                    ?.musicPlayButtonRenderer?.playNavigationEndpoint
-                                    ?.watchPlaylistEndpoint?.playlistId
-                            val itemTitle = r.title.runs?.firstOrNull()?.text ?: "Chart"
-                            if (playlistId != null) {
-                                val songs = playlist(playlistId).getOrNull()?.songs.orEmpty()
-                                if (songs.isNotEmpty()) {
-                                    playlistSections.add(
-                                        ChartsPage.ChartSection(
-                                            title = itemTitle,
-                                            items = songs,
-                                            chartType = determineChartType(itemTitle)
-                                        )
-                                    )
-                                }
+                            val playlist = convertMusicTwoRowItem(r)
+                            if (playlist is PlaylistItem) {
+                                directCarouselItems.add(playlist)
                             }
                         }
                     }
                 }
 
-                if (directSongItems.isNotEmpty()) {
+                if (directCarouselItems.isNotEmpty()) {
                     sections.add(
                         ChartsPage.ChartSection(
                             title = carouselTitle,
-                            items = directSongItems,
+                            items = directCarouselItems,
                             chartType = determineChartType(carouselTitle)
                         )
                     )
                 }
-                sections.addAll(playlistSections)
             }
 
             content.musicShelfRenderer?.let { renderer ->

@@ -216,25 +216,27 @@ constructor(
 
         val allResult = mutableListOf<LyricsResult>()
         val providers = orderedProviders()
-        currentLyricsJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).async {
-            providers.forEach { provider ->
-                if (provider.isEnabled(context)) {
-                    try {
-                        provider.getAllLyrics(mediaId, songTitle, songArtists, songAlbum, duration) lyricsCallback@{ lyrics ->
-                            if (!isMeaningfulLyrics(lyrics)) return@lyricsCallback
-                            val result = LyricsResult(provider.name, lyrics)
-                            allResult += result
-                            callback(result)
+        coroutineScope {
+            val job = launch(Dispatchers.IO) {
+                providers.forEach { provider ->
+                    if (provider.isEnabled(context)) {
+                        try {
+                            provider.getAllLyrics(mediaId, songTitle, songArtists, songAlbum, duration) lyricsCallback@{ lyrics ->
+                                if (!isMeaningfulLyrics(lyrics)) return@lyricsCallback
+                                val result = LyricsResult(provider.name, lyrics)
+                                allResult += result
+                                callback(result)
+                            }
+                        } catch (e: Exception) {
+                            reportException(e)
                         }
-                    } catch (e: Exception) {
-                        reportException(e)
                     }
                 }
+                cache.put(cacheKey, allResult)
             }
-            cache.put(cacheKey, allResult)
+            currentLyricsJob = job
+            job.join()
         }
-
-        currentLyricsJob?.join()
     }
 
     private suspend fun orderedProviders(): List<LyricsProvider> {

@@ -115,13 +115,15 @@ object NewPipeUtils {
                 url.toString()
             }
 
-            val hasThrottlingParam = url.contains("&n=") || url.contains("?n=")
-            val resolvedUrl = if (hasThrottlingParam) {
+            val needsThrottlingDeobfuscation =
+                (format.url == null || client?.useSignatureTimestamp == true) &&
+                    (url.contains("&n=") || url.contains("?n="))
+            val resolvedUrl = if (needsThrottlingDeobfuscation) {
                 runCatching {
                     retryWithBackoff(
-                        maxAttempts = 3,
-                        initialDelayMs = 250L,
-                        maxDelayMs = 2_000L
+                        maxAttempts = 2,
+                        initialDelayMs = 100L,
+                        maxDelayMs = 500L
                     ) {
                         YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, url)
                     }

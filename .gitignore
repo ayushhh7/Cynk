@@ -42,4 +42,9 @@ keystore.properties
 *.properties
 !gradle.properties
 !gradle/wrapper/gradle-wrapper.properties
+.env
+.env.*
+!.env.example
+repo/
+
 

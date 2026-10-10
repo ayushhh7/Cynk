@@ -35,6 +35,7 @@ class LyricsPreloadManager @Inject constructor(
     @ApplicationContext private val context: android.content.Context,
     private val database: MusicDatabase,
     private val networkConnectivity: NetworkConnectivityObserver,
+    private val lyricsHelper: LyricsHelper,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var preloadJob: Job? = null
@@ -158,8 +159,6 @@ class LyricsPreloadManager @Inject constructor(
      * This is a simplified version that gets lyrics from enabled providers.
      */
     private suspend fun fetchLyricsForSong(song: MediaMetadata): String? {
-        val lyricsHelper = LyricsHelper(context, networkConnectivity)
-        
         return try {
             lyricsHelper.getLyrics(song, preferredProviderOnly = true)
         } catch (e: Exception) {

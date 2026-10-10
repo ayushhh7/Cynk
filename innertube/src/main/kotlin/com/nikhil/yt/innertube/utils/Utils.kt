@@ -11,42 +11,57 @@ package com.nikhil.yt.innertube.utils
 import com.nikhil.yt.innertube.YouTube
 import com.nikhil.yt.innertube.pages.LibraryPage
 import com.nikhil.yt.innertube.pages.PlaylistPage
+import kotlinx.coroutines.delay
 import java.security.MessageDigest
 
 @JvmName("completedLibrary")
 suspend fun Result<PlaylistPage>.completed(): Result<PlaylistPage> = runCatching {
     val page = getOrThrow()
     val songs = page.songs.toMutableList()
-    var continuation = page.songsContinuation
+    var continuation = page.songsContinuation ?: page.continuation
     val seenContinuations = mutableSetOf<String>()
+    val seenSetVideoIds = mutableSetOf<String>()
+    page.songs.forEach { it.setVideoId?.let(seenSetVideoIds::add) }
+
     var requestCount = 0
-    val maxRequests = 50
+    val maxRequests = 100
     var consecutiveEmptyResponses = 0
-    
+
     while (continuation != null && requestCount < maxRequests) {
         if (continuation in seenContinuations) {
             break
         }
         seenContinuations.add(continuation)
         requestCount++
-        
-        val continuationPage = YouTube.playlistContinuation(continuation).getOrNull() ?: break
-        
+
+        val continuationPage = YouTube.playlistContinuation(continuation).getOrNull() ?: run {
+            delay(500)
+            YouTube.playlistContinuation(continuation).getOrNull()
+        } ?: break
+
         if (continuationPage.songs.isEmpty()) {
             consecutiveEmptyResponses++
             if (consecutiveEmptyResponses >= 2) break
         } else {
             consecutiveEmptyResponses = 0
-            songs += continuationPage.songs
+            val newSongs = continuationPage.songs.filter { song ->
+                val setVid = song.setVideoId
+                if (setVid != null) {
+                    seenSetVideoIds.add(setVid)
+                } else {
+                    true
+                }
+            }
+            songs += newSongs
         }
-        
+
         continuation = continuationPage.continuation
     }
     PlaylistPage(
         playlist = page.playlist,
         songs = songs,
-        songsContinuation = null,
-        continuation = page.continuation
+        songsContinuation = continuation,
+        continuation = continuation
     )
 }
 
@@ -57,18 +72,21 @@ suspend fun Result<LibraryPage>.completed(): Result<LibraryPage> = runCatching {
     var continuation = page.continuation
     val seenContinuations = mutableSetOf<String>()
     var requestCount = 0
-    val maxRequests = 50
+    val maxRequests = 100
     var consecutiveEmptyResponses = 0
-    
+
     while (continuation != null && requestCount < maxRequests) {
         if (continuation in seenContinuations) {
             break
         }
         seenContinuations.add(continuation)
         requestCount++
-        
-        val continuationPage = YouTube.libraryContinuation(continuation).getOrNull() ?: break
-        
+
+        val continuationPage = YouTube.libraryContinuation(continuation).getOrNull() ?: run {
+            delay(500)
+            YouTube.libraryContinuation(continuation).getOrNull()
+        } ?: break
+
         if (continuationPage.items.isEmpty()) {
             consecutiveEmptyResponses++
             if (consecutiveEmptyResponses >= 2) break
@@ -76,12 +94,12 @@ suspend fun Result<LibraryPage>.completed(): Result<LibraryPage> = runCatching {
             consecutiveEmptyResponses = 0
             items += continuationPage.items
         }
-        
+
         continuation = continuationPage.continuation
     }
     LibraryPage(
         items = items,
-        continuation = null
+        continuation = continuation
     )
 }
 

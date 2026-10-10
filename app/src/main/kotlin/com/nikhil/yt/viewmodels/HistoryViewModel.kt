@@ -44,7 +44,7 @@ constructor(
 
     val events =
         database
-            .events()
+            .events(limit = 500)
             .map { events ->
                 events
                     .groupBy {

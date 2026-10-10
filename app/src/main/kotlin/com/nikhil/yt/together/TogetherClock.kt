@@ -15,9 +15,12 @@ data class TogetherClockSnapshot(
     val estimatedRttMs: Long = 0L,
 )
 
-class TogetherClock {
-    private var offsetMs: Double = 0.0
+class TogetherClock(
+    initialOffsetMs: Double = (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()).toDouble(),
+) {
+    private var offsetMs: Double = initialOffsetMs
     private var rttMs: Double = 0.0
+    private var hasPongSample: Boolean = false
 
     fun onPong(
         sentAtElapsedMs: Long,
@@ -29,10 +32,11 @@ class TogetherClock {
         val newOffset = (serverElapsedMs - mid).toDouble()
 
         val rttAlpha = 0.2
-        val offsetAlpha = if (newOffset.absoluteValue > 1500.0) 0.6 else 0.2
+        val offsetAlpha = if (!hasPongSample || (newOffset - offsetMs).absoluteValue > 1500.0) 0.6 else 0.2
 
-        rttMs = if (rttMs == 0.0) rtt.toDouble() else rttMs + (rtt - rttMs) * rttAlpha
-        offsetMs = if (offsetMs == 0.0) newOffset else offsetMs + (newOffset - offsetMs) * offsetAlpha
+        rttMs = if (!hasPongSample) rtt.toDouble() else rttMs + (rtt - rttMs) * rttAlpha
+        offsetMs = if (!hasPongSample) newOffset else offsetMs + (newOffset - offsetMs) * offsetAlpha
+        hasPongSample = true
 
         return snapshot()
     }
@@ -43,6 +47,6 @@ class TogetherClock {
             estimatedRttMs = rttMs.toLong(),
         )
 
-    fun serverTimeNow(): Long = System.currentTimeMillis() + offsetMs.toLong()
+    fun serverTimeNow(): Long = android.os.SystemClock.elapsedRealtime() + offsetMs.toLong()
 }
 

@@ -114,7 +114,7 @@ class ForYouSuggestionEngine @Inject constructor(
             val allSongsDeferred = async { database.mostPlayedSongs(fromTimeStamp, limit = 100).first() }
             val likedSongsDeferred = async { database.likedSongsByPlayTimeAsc().first() }
             val skipsDeferred = async { database.getAllSkips().first() }
-            val recentEventsDeferred = async { database.events().first().take(20) }
+            val recentEventsDeferred = async { database.events(limit = 20).first() }
 
             allSongs = allSongsDeferred.await()
             likedSongs = likedSongsDeferred.await()

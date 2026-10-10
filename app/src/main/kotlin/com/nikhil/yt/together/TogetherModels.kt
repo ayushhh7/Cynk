@@ -33,7 +33,7 @@ data class TogetherParticipant(
 @Immutable
 data class TogetherRoomSettings(
     val allowGuestsToAddTracks: Boolean = true,
-    val allowGuestsToControlPlayback: Boolean = false,
+    val allowGuestsToControlPlayback: Boolean = true,
     val requireHostApprovalToJoin: Boolean = false,
 )
 
@@ -52,6 +52,7 @@ data class TogetherRoomState(
     val repeatMode: Int = 0,
     val shuffleEnabled: Boolean = false,
     val sentAtElapsedRealtimeMs: Long = 0L,
+    val sequenceNumber: Long = 0L,
 )
 
 @Immutable
@@ -139,6 +140,11 @@ sealed interface TogetherServerEvent {
 
     data class Reconnecting(
         val attempt: Int,
+    ) : TogetherServerEvent
+
+    data class HeartbeatPongReceived(
+        val pong: com.nikhil.yt.together.HeartbeatPong,
+        val receivedAtElapsedRealtimeMs: Long,
     ) : TogetherServerEvent
 
     data object Disconnected : TogetherServerEvent

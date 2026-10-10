@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Velune - by Nikhil
  * Nikhil
  * Licensed Under GPL-3.0
@@ -121,7 +121,7 @@ fun MusicTogetherScreen(
             defaultValue = Build.MODEL?.takeIf { it.isNotBlank() } ?: context.getString(R.string.app_name),
         )
     val (allowAddTracks, setAllowAddTracksRaw) = rememberPreference(TogetherAllowGuestsToAddTracksKey, defaultValue = true)
-    val (allowControlPlayback, setAllowControlPlaybackRaw) = rememberPreference(TogetherAllowGuestsToControlPlaybackKey, defaultValue = false)
+    val (allowControlPlayback, setAllowControlPlaybackRaw) = rememberPreference(TogetherAllowGuestsToControlPlaybackKey, defaultValue = true)
     val (requireApproval, setRequireApprovalRaw) = rememberPreference(TogetherRequireHostApprovalToJoinKey, defaultValue = false)
     val (lastJoinLink, setLastJoinLink) = rememberPreference(TogetherLastJoinLinkKey, defaultValue = "")
 
@@ -453,6 +453,13 @@ private fun OnlineParticipantsCard(
     onBan: (participantId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    androidx.compose.runtime.LaunchedEffect(participants) {
+        android.util.Log.d(
+            "CYNK_TOGETHER",
+            "CYNK_TOGETHER UI_PARTICIPANTS_RENDER count=${participants.size} names=${participants.map { "${it.name}:${if (it.isHost) "HOST" else "GUEST"}" }}",
+        )
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()

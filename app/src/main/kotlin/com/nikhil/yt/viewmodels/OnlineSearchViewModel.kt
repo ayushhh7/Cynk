@@ -29,6 +29,7 @@ import com.nikhil.yt.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -46,7 +47,7 @@ constructor(
 
     init {
         viewModelScope.launch {
-            filter.collect { filter ->
+            filter.collectLatest { filter ->
                 if (filter == null) {
                     if (summaryPage == null) {
                         YouTube
